@@ -8,6 +8,7 @@ data/
 gps/
 stations.csv
 maintenance_log.md
+ridgeline_data_pack*/
 
 # --- Python & Bytecode Cache -------------------------------------------------
 __pycache__/

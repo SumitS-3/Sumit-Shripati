@@ -33,19 +33,31 @@ FlagCandidate = Dict[str, Any]
 
 # ── Helper: run-length encoding ───────────────────────────────────────────────
 
-def _find_runs(series: pd.Series, condition: pd.Series) -> List[Tuple[int, int, int]]:
+def _find_runs(
+    series: pd.Series | pd.DataFrame,
+    condition: pd.Series,
+    max_gap_min: int | None = None,
+    break_before: pd.Series | None = None,
+) -> List[Tuple[int, int, int]]:
     """
     Find contiguous runs where `condition` is True.
     Returns list of (start_iloc, end_iloc, run_length).  Both bounds inclusive.
     """
     runs: List[Tuple[int, int, int]] = []
     arr = condition.values
+    time_breaks = np.zeros(len(arr), dtype=bool)
+    if break_before is not None:
+        time_breaks |= break_before.to_numpy(dtype=bool)
+    if max_gap_min is not None:
+        elapsed = series["timestamp_utc"].diff()
+        time_breaks |= ((elapsed > pd.Timedelta(minutes=max_gap_min)) |
+                        (elapsed <= pd.Timedelta(0))).to_numpy()
     n = len(arr)
     i = 0
     while i < n:
         if arr[i]:
             j = i + 1
-            while j < n and arr[j]:
+            while j < n and arr[j] and not time_breaks[j]:
                 j += 1
             runs.append((i, j - 1, j - i))
             i = j
@@ -98,8 +110,8 @@ def check_completeness(df: pd.DataFrame, cfg: CheckerConfig) -> List[FlagCandida
         n_missing = int(diffs.iloc[idx] / interval_s) - 1
         flags.append({
             "channel":   "all",
-            "start_utc": t_before,
-            "end_utc":   t_after,
+            "start_utc": t_before + pd.Timedelta(seconds=interval_s),
+            "end_utc":   t_after - pd.Timedelta(seconds=interval_s),
             "issue":     f"Data gap: {gap_min} min ({n_missing} missing intervals)",
             "action":    "exclude",
             "note":      (
@@ -113,16 +125,17 @@ def check_completeness(df: pd.DataFrame, cfg: CheckerConfig) -> List[FlagCandida
     # ── Duplicate timestamps ───────────────────────────────────────────────
     dup_col = df.get("dup_ts", pd.Series(False, index=df.index))
     dup_rows = df[dup_col]
-    if len(dup_rows) > 0:
-        dup_times = dup_rows["timestamp_utc"].sort_values()
-        t0 = dup_times.iloc[0]
-        t1 = dup_times.iloc[-1]
-        n  = len(dup_rows)
+    # Work with unique timestamps so repeated rows stay in the same incident.
+    dup_counts = dup_rows.groupby("timestamp_utc").size().sort_index()
+    dup_groups = dup_counts.index.to_series().diff().gt(pd.Timedelta(seconds=interval_s)).cumsum()
+    for _, counts in dup_counts.groupby(dup_groups):
+        t0, t1 = counts.index[0], counts.index[-1]
+        n = int(counts.sum())
         flags.append({
             "channel":   "all",
             "start_utc": t0,
             "end_utc":   t1,
-            "issue":     f"Duplicate timestamps: {n} rows share {n // 2} timestamp(s)",
+            "issue":     f"Duplicate timestamps: {n} rows share {len(counts)} timestamp(s)",
             "action":    "correct",
             "note":      (
                 f"{n} rows have duplicate timestamps "
@@ -136,11 +149,9 @@ def check_completeness(df: pd.DataFrame, cfg: CheckerConfig) -> List[FlagCandida
     for col in numeric_cols:
         if col not in df.columns:
             continue
-        nan_count = df[col].isna().sum()
-        if nan_count > 0:
-            nan_rows = df[df[col].isna()]
-            t0 = nan_rows["timestamp_utc"].iloc[0]
-            t1 = nan_rows["timestamp_utc"].iloc[-1]
+        for si, ei, nan_count in _find_runs(df, df[col].isna(), cfg.sampling_interval_min):
+            t0 = df["timestamp_utc"].iloc[si]
+            t1 = df["timestamp_utc"].iloc[ei]
             flags.append({
                 "channel":   col,
                 "start_utc": t0,
@@ -173,7 +184,7 @@ def check_physical_bounds(df: pd.DataFrame, cfg: CheckerConfig) -> List[FlagCand
         bad_mask = (v < lo) | (v > hi)
         bad_mask = bad_mask.fillna(False)
 
-        for si, ei, cnt in _find_runs(df, bad_mask):
+        for si, ei, cnt in _find_runs(df, bad_mask, cfg.sampling_interval_min):
             val_min = v.iloc[si:ei + 1].min()
             val_max = v.iloc[si:ei + 1].max()
             flags.append(_flag_from_run(
@@ -209,7 +220,9 @@ def check_flatlines(df: pd.DataFrame, cfg: CheckerConfig) -> List[FlagCandidate]
         series = df[col]
 
         # Group consecutive identical values
-        group_ids = (series != series.shift()).cumsum()
+        elapsed = df["timestamp_utc"].diff()
+        time_break = (elapsed > pd.Timedelta(minutes=cfg.sampling_interval_min)) | (elapsed <= pd.Timedelta(0))
+        group_ids = ((series != series.shift()) | time_break).cumsum()
         run_lens  = series.groupby(group_ids).transform("count")
 
         # Build mask of long runs
@@ -231,7 +244,9 @@ def check_flatlines(df: pd.DataFrame, cfg: CheckerConfig) -> List[FlagCandidate]
 
         flat_mask = flat_mask.fillna(False)
 
-        for si, ei, cnt in _find_runs(df, flat_mask):
+        # Split at value changes too: adjacent constant runs are distinct evidence.
+        for si, ei, cnt in _find_runs(df, flat_mask, cfg.sampling_interval_min,
+                                     break_before=group_ids.ne(group_ids.shift())):
             val = series.iloc[si]
             dur_h = cnt * cfg.sampling_interval_min / 60
             ts = df["timestamp_utc"].iloc[si]
@@ -285,7 +300,7 @@ def check_pressure_steps(df: pd.DataFrame, cfg: CheckerConfig) -> List[FlagCandi
     big_step = (step > cfg.pressure_max_step_hpa).fillna(False)
 
     # Merge adjacent steps into one flag
-    for si, ei, cnt in _find_runs(df, big_step):
+    for si, ei, cnt in _find_runs(df, big_step, cfg.sampling_interval_min):
         delta = step.iloc[si:ei + 1].max()
         p_before = p.iloc[si - 1] if si > 0 else float("nan")
         p_after  = p.iloc[ei]
@@ -328,7 +343,7 @@ def check_ghi_night(df: pd.DataFrame, cfg: CheckerConfig) -> List[FlagCandidate]
     bad   = night & (df["ghi_wm2"] > cfg.ghi_night_threshold)
     bad   = bad.fillna(False)
 
-    for si, ei, cnt in _find_runs(df, bad):
+    for si, ei, cnt in _find_runs(df, bad, cfg.sampling_interval_min):
         ts   = df["timestamp_utc"].iloc[si]
         te   = df["timestamp_utc"].iloc[ei]
         vmax = df["ghi_wm2"].iloc[si:ei + 1].max()
@@ -364,7 +379,7 @@ def check_rh_bounds(df: pd.DataFrame, cfg: CheckerConfig) -> List[FlagCandidate]
 
     over = (df["rh_pct"] > 101.0).fillna(False)
 
-    for si, ei, cnt in _find_runs(df, over):
+    for si, ei, cnt in _find_runs(df, over, cfg.sampling_interval_min):
         ts   = df["timestamp_utc"].iloc[si]
         te   = df["timestamp_utc"].iloc[ei]
         vmax = df["rh_pct"].iloc[si:ei + 1].max()
@@ -398,7 +413,7 @@ def check_cross_channel(df: pd.DataFrame, cfg: CheckerConfig) -> List[FlagCandid
     ghi_high = df["ghi_wm2"] > 200.0
     suspect  = (rh_sat & ghi_high).fillna(False)
 
-    for si, ei, cnt in _find_runs(df, suspect):
+    for si, ei, cnt in _find_runs(df, suspect, cfg.sampling_interval_min):
         # Only flag multi-record events to avoid single-record coincidences
         if cnt < 6:
             continue

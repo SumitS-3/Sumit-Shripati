@@ -64,10 +64,10 @@ class CheckerConfig:
     ghi_night_threshold: float = 200.0         # W/m2 -- below this can be twilight/dawn
 
     # Data gaps: gaps larger than this are flagged
-    gap_threshold_min: int = 20              # more than 2 missed intervals
+    gap_threshold_min: int = 10              # flag even a single missing 10-minute sample
 
-    # Interval aggregation: consecutive flags within this gap are merged
-    merge_gap_min: int = 30                  # merge if ≤ 30 min between same-issue windows
+    # Interval aggregation: capped at one sample interval to avoid flagging good data.
+    merge_gap_min: int = 10
 
     # Report
     report_title: str = "Ridgeline Schools Weather Network — Health Report"

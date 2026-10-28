@@ -262,10 +262,13 @@ class TestFlagging:
              "issue": "Flatline: temp_c same", "action": "exclude", "note": "test"},
             {"channel": "temp_c", "start_utc": pd.Timestamp("2025-03-15 12:20"),
              "end_utc": pd.Timestamp("2025-03-15 12:30"),
-             "issue": "Flatline: temp_c same2", "action": "exclude", "note": "test2"},
+             "issue": "Flatline: temp_c same", "action": "exclude", "note": "test2"},
         ]
         merged = aggregate_flags(candidates, cfg)
         assert len(merged) == 1  # should merge
+        assert merged[0]["start_utc"] == candidates[0]["start_utc"]
+        assert merged[0]["end_utc"] == candidates[1]["end_utc"]
+        assert "test2" in merged[0]["note"]
 
     def test_aggregate_separates_different_channels(self, cfg):
         candidates = [

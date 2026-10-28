@@ -56,19 +56,18 @@ def _fmt_ts(ts: Any) -> str:
 
 def _should_merge(a: Dict, b: Dict, merge_gap_min: int) -> bool:
     """Return True if two flag candidates should be merged into one interval."""
-    if a["channel"] != b["channel"]:
-        return False
-    # Compare only the first few words of the issue (same problem category)
-    issue_a = " ".join(a["issue"].split()[:3])
-    issue_b = " ".join(b["issue"].split()[:3])
-    if issue_a != issue_b:
+    # Similar wording is not evidence that two problems have the same remedy.
+    # Checks already emit complete runs, so merge only matching descriptions.
+    if any(a.get(key) != b.get(key) for key in ("channel", "issue", "action")):
         return False
     # Gap between end of a and start of b
     try:
         t_end   = pd.Timestamp(a["end_utc"])
         t_start = pd.Timestamp(b["start_utc"])
+        if pd.isna(t_end) or pd.isna(t_start):
+            return False
         gap_min = (t_start - t_end).total_seconds() / 60
-        return 0 <= gap_min <= merge_gap_min
+        return gap_min <= merge_gap_min
     except Exception:
         return False
 
@@ -78,37 +77,43 @@ def aggregate_flags(
     cfg: CheckerConfig,
 ) -> List[Dict]:
     """
-    Merge consecutive candidates for the same channel / issue into intervals.
+    Merge overlapping or adjacent candidates with matching channel, issue and action.
+    Never bridge more than one sample interval: intervening readings may be good.
     Returns sorted list of merged flag dicts.
     """
     if not candidates:
         return []
 
-    # Sort by channel, then start_utc
-    def sort_key(f: Dict) -> tuple:
-        return (
-            f.get("channel", ""),
-            f.get("start_utc", pd.NaT) if f.get("start_utc") else pd.NaT,
-        )
+    def timestamp_key(value: Any) -> pd.Timestamp:
+        return pd.Timestamp.min if value is None or pd.isna(value) else pd.Timestamp(value)
 
     sorted_cands = sorted(candidates, key=lambda f: (
         f.get("channel", ""),
-        f.get("start_utc") or pd.Timestamp.min,
+        f.get("issue", ""),
+        f.get("action", ""),
+        timestamp_key(f.get("start_utc")),
+        timestamp_key(f.get("end_utc")),
+        f.get("note", ""),
     ))
 
     merged: List[Dict] = []
     current = dict(sorted_cands[0])
 
     for next_flag in sorted_cands[1:]:
-        if _should_merge(current, next_flag, cfg.merge_gap_min):
-            # Extend the current interval
-            current["end_utc"] = next_flag["end_utc"]
+        if _should_merge(current, next_flag, min(cfg.merge_gap_min, cfg.sampling_interval_min)):
+            # Nested intervals must not shorten a previously detected problem.
+            current["end_utc"] = max(pd.Timestamp(current["end_utc"]), pd.Timestamp(next_flag["end_utc"]))
+            if next_flag.get("note") and next_flag["note"] != current.get("note"):
+                current["note"] = current.get("note", "").rstrip(".") + "; " + next_flag["note"]
         else:
             merged.append(current)
             current = dict(next_flag)
 
     merged.append(current)
-    return merged
+    return sorted(merged, key=lambda f: (
+        f.get("channel", ""), timestamp_key(f.get("start_utc")),
+        f.get("issue", ""), f.get("action", ""),
+    ))
 
 
 # ── Maintenance enrichment ────────────────────────────────────────────────────
