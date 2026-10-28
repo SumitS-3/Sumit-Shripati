@@ -47,6 +47,7 @@ from src.schema import FLAG_COLUMNS
 from src.maintenance import parse_maintenance_log
 from src.network_health import compute_station_summaries, recommend_technician_visit
 from src.report import generate_html_report
+from src.network_checks import run_network_checks
 
 
 def _failure_flag(station_id: str, reason: str) -> dict:
@@ -59,8 +60,8 @@ def _failure_flag(station_id: str, reason: str) -> dict:
 
 # ── Logging setup ─────────────────────────────────────────────────────────────
 
-def _setup_logging(verbose: bool = False) -> None:
-    level = logging.DEBUG if verbose else logging.INFO
+def _setup_logging(verbose: bool = False, quiet: bool = False) -> None:
+    level = logging.DEBUG if verbose else (logging.WARNING if quiet else logging.INFO)
     fmt   = "%(asctime)s %(levelname)-7s %(name)s: %(message)s"
     logging.basicConfig(level=level, format=fmt, datefmt="%H:%M:%S")
     # Suppress noisy third-party loggers
@@ -106,7 +107,7 @@ def main(argv: List[str] | None = None) -> int:
         prog="checker.py",
         description="Ridgeline weather-station data quality checker.",
     )
-    parser.add_argument("data_pack", help="Path to the data-pack directory.")
+    parser.add_argument("data_pack", nargs="?", help="Path to the data-pack directory.")
     parser.add_argument(
         "--output-dir", default=".",
         help="Directory to write flags.csv and report.html (default: current directory).",
@@ -122,14 +123,16 @@ def main(argv: List[str] | None = None) -> int:
     )
 
     args = parser.parse_args(argv)
-    _setup_logging(args.verbose)
+    _setup_logging(args.verbose, quiet=args.benchmark)
     logger = logging.getLogger("checker")
 
     # ── Optional benchmark mode ───────────────────────────────────────────
     if args.benchmark:
         from src.benchmark import run_benchmark
-        run_benchmark([8, 50, 100])
+        run_benchmark()
         return 0
+    if not args.data_pack:
+        parser.error("data_pack is required unless --benchmark is used")
 
     t_start = time.perf_counter()
     logger.info("Ridgeline checker starting.")
@@ -183,6 +186,8 @@ def main(argv: List[str] | None = None) -> int:
         for sid in absent_stations
     ]
     station_data: Dict[str, pd.DataFrame] = {}
+    station_candidates: Dict[str, list[dict]] = {}
+    station_configs: Dict[str, CheckerConfig] = {}
     n_failed = len(absent_stations)
 
     for station_id, csv_path in sorted(station_files.items()):
@@ -212,18 +217,38 @@ def main(argv: List[str] | None = None) -> int:
                                        meta.get("lat"), meta.get("lon"), station_cfg)
                 samples = analysis.clock_samples
                 candidates.extend(analysis.flags)
+                if analysis.position is not None:
+                    meta = {**meta, "lat": analysis.position[0], "lon": analysis.position[1]}
+                    meta_by_id[station_id] = meta
             df, temporal_flags = prepare_observations(df, samples, station_cfg)
             candidates.extend(temporal_flags)
-            candidates.extend(run_all_checks(station_id, df, station_cfg))
+            candidates.extend(run_all_checks(station_id, df, station_cfg, meta.get("lat"), meta.get("lon")))
         except Exception as exc:
             logger.error("Checks failed for %s: %s", station_id, exc, exc_info=True)
             n_failed += 1
             all_flag_rows.append(_failure_flag(station_id, str(exc)))
             continue
         station_data[station_id] = df
+        station_candidates[station_id] = candidates
+        station_configs[station_id] = station_cfg
 
-        # Build and collect flag rows
-        flag_rows = build_flag_rows(station_id, candidates, maintenance_events, station_cfg)
+    # Network evidence operates on corrected, deduplicated timelines and masks
+    # first-pass local exclusions. No peer measurements are copied into source data.
+    try:
+        network = run_network_checks(station_data, meta_by_id, station_candidates,
+                                     station_configs, maintenance_events)
+        station_candidates = network.flags
+        for sid, reason in network.failures.items():
+            all_flag_rows.append(_failure_flag(sid, f"network evidence failed: {reason}"))
+            n_failed += 1
+    except Exception as exc:
+        logger.error("Network evidence checks failed: %s", exc, exc_info=True)
+        for sid in station_data:
+            all_flag_rows.append(_failure_flag(sid, f"network evidence failed: {exc}"))
+        n_failed += len(station_data)
+
+    for station_id, candidates in station_candidates.items():
+        flag_rows = build_flag_rows(station_id, candidates, maintenance_events, station_configs[station_id])
         all_flag_rows.extend(flag_rows)
         logger.info("%s: %d final flags.", station_id, len(flag_rows))
 

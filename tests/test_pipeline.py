@@ -66,6 +66,17 @@ def test_report_failure_is_reported_after_flags_are_written(pack, tmp_path, monk
     assert (tmp_path / "flags.csv").is_file()
 
 
+def test_network_failure_is_visible_and_returns_partial_exit(pack, tmp_path, monkeypatch):
+    from src.network_checks import NetworkCheckResult
+    def fail_network(data, metadata, flags, configs, events):
+        return NetworkCheckResult(flags, {"S99": "peer evidence failed"})
+    monkeypatch.setattr(checker, "run_network_checks", fail_network)
+    assert checker.main([str(pack), "--output-dir", str(tmp_path)]) == 2
+    flags = pd.read_csv(tmp_path / "flags.csv")
+    assert flags.issue.tolist() == ["Station analysis incomplete"]
+    assert "peer evidence failed" in flags.note.iloc[0]
+
+
 def test_sensor_check_failure_is_not_swallowed(pack, tmp_path, monkeypatch):
     def fail_check(*args):
         raise RuntimeError("check failed")
@@ -161,7 +172,7 @@ def test_invalid_config_is_a_clean_cli_error(pack, tmp_path):
 def test_default_configs_do_not_share_mutable_bounds():
     first, second = CheckerConfig(), CheckerConfig()
     first.physical_bounds["temp_c"]["min"] = -999
-    assert second.physical_bounds["temp_c"]["min"] == -50
+    assert second.physical_bounds["temp_c"]["min"] == -90
 
 
 def test_bad_gps_packets_do_not_invalidate_weather_or_dominate_visit_ranking(station_frame):

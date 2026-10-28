@@ -87,33 +87,81 @@ weather decisions are validated.
 
 Suggested commit: `feat: validate GPS clocks and resolve observation replays`
 
-## Repository review and Phase 2b - weather evidence (next)
+## Phase 2b - weather evidence and defensible treatments (complete)
 
-Reviewed the CLI, all source modules, tests, requirements, ignore rules, README,
-existing outputs, pack metadata and notes, and record/time summaries for all eight
-observation and GPS files. Timing findings are resolved in Phase 2a; the following
-weather findings remain open:
+- Night/day screening now uses UTC, station coordinates and NOAA solar geometry,
+  with generous elevation margins over the whole logging interval. There are no
+  Colorado-specific UTC night hours; unknown location skips geometric diagnosis.
+- Broad screening bounds are configurable and described as screening limits, not
+  proof of universal physical impossibility. Small negative irradiance offsets are
+  allowed; RH above tolerance is withheld rather than capped as a fake calibration.
+- Peer comparisons use a geographic index and at most five nearby, similar-elevation
+  sites at the same cadence. Local exclusions are masked; a minimum of three valid
+  peers is required. Provisional pressure regimes remain available to recognize a
+  common weather change. Fixed site/elevation offsets are removed through residuals.
+- Shared interval masks count overlapping exclusions once. Weather checks use the
+  same schema, geometry and interval helpers; no observations are copied from peers.
+- Humidity failure requires sustained saturation, actual dry-peer votes and bright
+  conditions, while humid peer-supported saturation is kept. Sunshine or four hours
+  at 100% alone no longer establishes sensor blockage.
+- Isolated pressure spikes exclude only the spike; sustained baseline changes are
+  withheld pending calibration. A common pressure jump supported by peers is kept.
+- Wind replacements are checked for persistent changes in relative scale, with
+  hourly onset uncertainty. No specific unit conversion or calibration is assumed.
+- Rain-gauge obstruction requires the maintenance record and adequately observed
+  missed wet days; cleaning drainage is quarantined rather than assigned to invented
+  rainfall times. The uncertain onset and conservative interval are stated explicitly.
+- A sustained increase in daylight-versus-night temperature residual after shield/site
+  work triggers a conservative daytime quarantine from the work date. The later
+  statistical threshold crossing is not presented as the physical fault onset.
+- All weather configuration overrides are validated; partial bounds merge safely
+  with defaults. Unimplemented spike settings and an unused dependency were removed.
+- Network failures are isolated per station, recorded in flags and reflected in the
+  exit status. Maintenance provenance uses relevant record dates instead of chopped
+  quotations that can omit the important evidence.
 
-- **Corrections are too speculative.** Pressure changes are labelled correctable
-  without a measured offset or its applicable period; RH is capped without
-  establishing a calibration error. Establish a reproducible correction or withhold
-  the affected values with an explicit reason.
-- **Location disagreement remains a judgement call.** S05's trusted GPS fixes and
-  its installation latitude disagree; establish what this means for station metadata
-  and spatial comparisons before making a correction.
-- **Weather checks need context.** Night hours assume Colorado, long saturation
-  alone is treated as sensor failure, and station comparisons are absent. Inspect
-  evidence around S04's shield-post painting and rain-gauge cleaning, S07's
-  replacement anemometer, and S05's humidity note. These are investigation leads,
-  not established fault intervals or automatic correction instructions.
-- **Remaining validation and benchmarking.** Validate weather threshold overrides
-  as well as timing settings. The older full-checker benchmark in `src/benchmark.py`
-  uses a different sunlight timing assumption from the checker,
-  and its memory measurement excludes creation of the retained datasets.
+Validation: `python -m pytest -q` passes **149 tests**. New independent cases cover
+shared weather versus isolated faults, pressure exposure offsets, humid fog, dry-peer
+vote counts, replacements without scale changes, solar bias versus day-and-night
+warming, uncertain fault onset, blockage/drainage, polar seasons, sunset intervals,
+configuration round-tripping, benchmark isolation and per-station network failures.
 
-Implement and test these checks using evidence from the pack and independent
-fixtures, without rules tied to particular station IDs or anomaly dates. Regenerate
-root `flags.csv` once the checker decisions are defensible.
+Results on the supplied pack (dates and values below describe this pack, not rules
+embedded in the implementation):
+
+| Station/channel | Treatment and evidence |
+| --- | --- |
+| S02 pressure | Withhold 21 March 17:20 onward; its station-minus-peer baseline changes by about +6.4 hPa, without a reference calibration. |
+| S03 temperature | Withhold the two 85 C readings and the 481-record exact flatline; these earlier detections remain. |
+| S04 rain | Withhold 23 March 06:00 through 2 April 16:30 as a conservative interval after the last positive tip; the storm is missed and 33.4 mm appears near cleaning. Actual blockage onset is unknown. |
+| S04 temperature | The clearest day/night residual change is 3.4-5.3 C over six days; withhold daytime above 10 degrees solar elevation after the 15 March site work, because earlier smaller bias cannot be ruled out. Nights remain outside this flag. |
+| S05 humidity | Withhold the full 505-record near-saturation run, 7 March 12:00 through 11 March 00:00, including night; do not cap values. Retain the later peer-supported humid episode. |
+| S05 location | Retain weather, use the trusted receiver position for working geometry, and flag the installation-sheet disagreement for site verification; the source metadata is not silently edited. |
+| S06 time / S08 replay | Preserve the Phase 2a clock correction and replay removal; the genuine S08 gap remains excluded. |
+| S07 wind | Withhold from a conservative 26 March 14:00 onset boundary; relative scale changes by roughly 0.23 after replacement, which does not establish a 3.6 or other exact conversion. |
+
+The root `flags.csv` has been regenerated. The original 19 data-pack files remain
+unchanged. The root `report.html` still needs the Phase 3 redesign and should not
+be used as the final recommendation. Diagnostic output remains in ignored scratch/.
+
+Reproducible validation benchmark: `python checker.py --benchmark` (no pack needed).
+Generation, normalization, local checks, network checks and retained frames are
+included; CSV/NMEA parsing and HTML are excluded. Memory is traced allocation,
+not total process RSS. These measurements are specific to this machine:
+
+| Stations, each with 6,048 records | Elapsed | Peak traced memory |
+| --- | --- | --- |
+| 8 | 0.50 s | 5.56 MiB |
+| 100 | 5.55 s | 50.74 MiB |
+| 500 | 29.15 s | 247.04 MiB |
+
+Known limits: neighbour agreement cannot detect a fault common to the whole network;
+unrecognized maintenance wording may need review; insufficient peers mean a diagnosis
+is skipped, not that the data is certified. The solar heating and rain onset boundaries
+are conservative judgements. Neither peer differences nor this checker replace a
+calibration reference. See the formula reference in `src/solar.py`.
+
+Suggested commit: `feat: validate weather faults with bounded peer evidence`
 
 ## Phase 3 - coordinator report and visit priority
 

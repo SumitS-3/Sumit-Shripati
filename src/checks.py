@@ -26,6 +26,7 @@ import pandas as pd
 from .config import CheckerConfig
 from .intervals import find_runs as _find_runs
 from .schema import NUMERIC_COLUMNS
+from .solar import interval_sun_masks
 
 logger = logging.getLogger(__name__)
 
@@ -128,7 +129,8 @@ def check_physical_bounds(df: pd.DataFrame, cfg: CheckerConfig) -> List[FlagCand
             continue
         v = df[col]
         lo, hi = bounds["min"], bounds["max"]
-        bad_mask = (v < lo) | (v > hi)
+        # RH upper screening is emitted once by check_rh_bounds.
+        bad_mask = (v < lo) | ((v > hi) if col != "rh_pct" else False)
         bad_mask = bad_mask.fillna(False)
 
         for si, ei, cnt in _find_runs(df, bad_mask, cfg.sampling_interval_min):
@@ -141,7 +143,7 @@ def check_physical_bounds(df: pd.DataFrame, cfg: CheckerConfig) -> List[FlagCand
                 note=(
                     f"{cnt} record(s) in {col} outside physical bounds "
                     f"[{lo}, {hi}]; values [{val_min:.2f}, {val_max:.2f}] "
-                    "are not physically credible."
+                    "are withheld pending verification."
                 ),
             ))
 
@@ -150,19 +152,20 @@ def check_physical_bounds(df: pd.DataFrame, cfg: CheckerConfig) -> List[FlagCand
 
 # ── Check 3: Flatlines (stuck sensor / logger freeze) ────────────────────────
 
-def check_flatlines(df: pd.DataFrame, cfg: CheckerConfig) -> List[FlagCandidate]:
+def check_flatlines(df: pd.DataFrame, cfg: CheckerConfig,
+                   daylight: pd.Series | None = None) -> List[FlagCandidate]:
     """
     Detect runs of identical values exceeding the configured minimum run length.
 
     Special cases:
-      - rain_mm=0 and wind_kmh=0 are exempted (genuine calm/dry spells).
-      - ghi_wm2=0 at night is expected; only flag during expected daylight.
-      - rh_pct=100: short episodes are consistent with fog; longer ones suspect.
+      - wind_kmh=0 is exempted (genuine calm spells).
+      - ghi_wm2=0 may be night or cloud and is not diagnosed from duration alone.
+      - RH saturation requires network weather evidence, regardless of duration.
     """
     flags: List[FlagCandidate] = []
 
     for col, min_run in cfg.flatline_min_records.items():
-        if col not in df.columns:
+        if col not in df.columns or col == "rh_pct":
             continue
         series = df[col]
 
@@ -180,14 +183,10 @@ def check_flatlines(df: pd.DataFrame, cfg: CheckerConfig) -> List[FlagCandidate]
             zero_mask = series == 0
             flat_mask = flat_mask & ~zero_mask
 
-        # For GHI: only flag zero flatlines during expected daylight hours
-        # Night window for zero-exemption is more generous than the nighttime-GHI check
-        # (UTC 0-13 covers full night + dawn/dusk transition for Colorado)
         if col == "ghi_wm2":
-            hour = df["timestamp_utc"].dt.hour
-            night_or_twilight = (hour >= 0) & (hour <= 13)
-            zero_at_night = (series == 0) & night_or_twilight
-            flat_mask = flat_mask & ~zero_at_night
+            # Zero can be night or heavy cloud; it requires peer evidence, not a
+            # fixed UTC schedule. Nonzero freezes are screened in geometric daylight.
+            flat_mask &= series.gt(0) & (daylight if daylight is not None else False)
 
         flat_mask = flat_mask.fillna(False)
 
@@ -199,23 +198,9 @@ def check_flatlines(df: pd.DataFrame, cfg: CheckerConfig) -> List[FlagCandidate]
             ts = df["timestamp_utc"].iloc[si]
             te = df["timestamp_utc"].iloc[ei]
 
-            # For RH=100: differentiate by duration
-            if col == "rh_pct" and abs(val - 100.0) < 0.5:
-                action = "exclude" if dur_h > 4.0 else "keep"
-                note = (
-                    f"RH stuck at {val:.0f} % for {dur_h:.1f} h "
-                    f"({ts.strftime('%Y-%m-%d %H:%M')} to {te.strftime('%Y-%m-%d %H:%M')}); "
-                    + ("persistent saturation >4 h is more consistent with sensor blockage than fog."
-                       if dur_h > 4.0
-                       else "short saturation consistent with fog or rain; flagged for awareness.")
-                )
-            else:
-                action = "exclude"
-                note = (
-                    f"{col} unchanged at {val} for {dur_h:.1f} h "
-                    f"({ts.strftime('%Y-%m-%d %H:%M')} to {te.strftime('%Y-%m-%d %H:%M')}); "
-                    "indicates logger freeze, sensor failure, or stuck analogue output."
-                )
+            action = "exclude"
+            note = (f"{col} repeats exactly {val:g} for {cnt} consecutive records over {dur_h:.1f} h; "
+                    "withhold the run as a possible stuck sensor or logger output, pending verification.")
 
             flags.append(_flag_from_run(
                 df, si, ei, col,
@@ -230,63 +215,42 @@ def check_flatlines(df: pd.DataFrame, cfg: CheckerConfig) -> List[FlagCandidate]
 # ── Check 4: Pressure step changes ────────────────────────────────────────────
 
 def check_pressure_steps(df: pd.DataFrame, cfg: CheckerConfig) -> List[FlagCandidate]:
-    """
-    Flag abrupt pressure jumps exceeding cfg.pressure_max_step_hpa in one interval.
-
-    Natural frontal passage: ~2-3 hPa/hour = ~0.3 hPa/10 min.
-    A step > 2.5 hPa/10 min is physically implausible and suggests:
-      - sensor replacement or logger restart
-      - wiring fault
-    """
+    """Distinguish isolated spikes from baseline changes; never invent a calibration."""
     flags: List[FlagCandidate] = []
     if "pressure_hpa" not in df.columns:
         return flags
 
     p = df["pressure_hpa"]
-    step = p.diff().abs()
-    big_step = (step > cfg.pressure_max_step_hpa).fillna(False)
-
-    # Merge adjacent steps into one flag
-    for si, ei, cnt in _find_runs(df, big_step, cfg.sampling_interval_min):
-        delta = step.iloc[si:ei + 1].max()
-        p_before = p.iloc[si - 1] if si > 0 else float("nan")
-        p_after  = p.iloc[ei]
-        ts_start = df["timestamp_utc"].iloc[si]
-        ts_end   = df["timestamp_utc"].iloc[ei]
-        flags.append({
-            "channel":   "pressure_hpa",
-            "start_utc": ts_start,
-            "end_utc":   ts_end,
-            "issue":     (
-                f"Pressure step {p_before:.1f} to {p_after:.1f} hPa "
-                f"({delta:.1f} hPa in {cnt * cfg.sampling_interval_min} min)"
-            ),
-            "action":    "correct",
-            "note":      (
-                f"Pressure changes by {delta:.1f} hPa in {cnt} intervals at "
-                f"{ts_start.strftime('%Y-%m-%d %H:%M')}; natural front < 0.5 hPa/10 min. "
-                "Check sensor replacement or logger restart. "
-                "Correct by applying a constant offset to align with neighbouring intervals."
-            ),
-        })
+    delta = p.diff()
+    regular = df.timestamp_utc.diff().eq(pd.Timedelta(minutes=cfg.sampling_interval_min))
+    limit = cfg.pressure_max_step_hpa * cfg.sampling_interval_min / 10
+    big = delta.abs().gt(limit) & regular
+    isolated = (big & big.shift(-1, fill_value=False) & delta.mul(delta.shift(-1)).lt(0)
+                & p.shift(-1).sub(p.shift(1)).abs().lt(limit / 2))
+    for index in df.index[isolated]:
+        flags.append(_flag_from_run(df, index, index, "pressure_hpa", "Pressure isolated spike", "exclude",
+                     f"Pressure jumps by {delta.iloc[index]:+g} hPa then returns within {limit / 2:g} hPa of the preceding value at the next sample; withhold only the isolated reading."))
+    transitions = df.index[big & ~isolated & ~isolated.shift(1, fill_value=False)].tolist()
+    for position, index in enumerate(transitions):
+        end = transitions[position + 1] - 1 if position + 1 < len(transitions) else len(df) - 1
+        flags.append(_flag_from_run(df, index, end, "pressure_hpa", "Pressure step; calibration unresolved", "exclude",
+                     f"Pressure changes by {delta.iloc[index]:+g} hPa in {cfg.sampling_interval_min} minutes; withhold the following regime until independent evidence establishes its calibration, rather than imposing an offset."))
 
     return flags
 
 
 # ── Check 5: GHI nighttime non-zero ───────────────────────────────────────────
 
-def check_ghi_night(df: pd.DataFrame, cfg: CheckerConfig) -> List[FlagCandidate]:
+def check_ghi_night(df: pd.DataFrame, cfg: CheckerConfig,
+                    night: pd.Series | None = None) -> List[FlagCandidate]:
     """
     Flag significant GHI values during hours when solar irradiance should be zero.
-    For Colorado stations (UTC-7 MST): sunrise ~12-13 UTC, sunset ~01-02 UTC.
-    Night = UTC 02 to 11 inclusive.
+    The caller supplies a whole-interval geometric night mask; skip if location is unknown.
     """
     flags: List[FlagCandidate] = []
-    if "ghi_wm2" not in df.columns:
+    if "ghi_wm2" not in df.columns or night is None:
         return flags
 
-    hour = df["timestamp_utc"].dt.hour
-    night = (hour >= cfg.ghi_night_start_utc) & (hour <= cfg.ghi_night_end_utc)
     bad   = night & (df["ghi_wm2"] > cfg.ghi_night_threshold)
     bad   = bad.fillna(False)
 
@@ -305,8 +269,7 @@ def check_ghi_night(df: pd.DataFrame, cfg: CheckerConfig) -> List[FlagCandidate]
             action="exclude",
             note=(
                 f"GHI up to {vmax:.0f} W/m2 recorded {ts.strftime('%H:%M')}-"
-                f"{te.strftime('%H:%M')} UTC, corresponding to local nighttime; "
-                "sensor offset or radiation-shield obstruction."
+                f"{te.strftime('%H:%M')} UTC while the sun remains below {cfg.solar_night_elevation_deg:g} degrees across each logging interval; withhold irradiance and inspect the channel or clock."
             ),
         ))
 
@@ -317,14 +280,14 @@ def check_ghi_night(df: pd.DataFrame, cfg: CheckerConfig) -> List[FlagCandidate]
 
 def check_rh_bounds(df: pd.DataFrame, cfg: CheckerConfig) -> List[FlagCandidate]:
     """
-    Relative humidity > 101 % is physically impossible even for cheap sensors.
-    Correct by capping to 100.0 %.
+    Withhold RH above the screening tolerance; capping is not a calibration.
     """
     flags: List[FlagCandidate] = []
     if "rh_pct" not in df.columns:
         return flags
 
-    over = (df["rh_pct"] > 101.0).fillna(False)
+    maximum = cfg.physical_bounds["rh_pct"]["max"]
+    over = (df["rh_pct"] > maximum).fillna(False)
 
     for si, ei, cnt in _find_runs(df, over, cfg.sampling_interval_min):
         ts   = df["timestamp_utc"].iloc[si]
@@ -332,12 +295,11 @@ def check_rh_bounds(df: pd.DataFrame, cfg: CheckerConfig) -> List[FlagCandidate]
         vmax = df["rh_pct"].iloc[si:ei + 1].max()
         flags.append(_flag_from_run(
             df, si, ei, "rh_pct",
-            issue=f"RH above 101 %: max {vmax:.0f} % ({cnt} records)",
-            action="correct",
+            issue=f"RH above {maximum:g} %: max {vmax:g} % ({cnt} records)",
+            action="exclude",
             note=(
                 f"RH up to {vmax:.0f} % at {ts.strftime('%Y-%m-%d %H:%M')} to "
-                f"{te.strftime('%Y-%m-%d %H:%M')}; cap to 100.0 % "
-                "(sensor reads slightly above saturation due to calibration offset)."
+                f"{te.strftime('%Y-%m-%d %H:%M')}; withhold these values because no reference calibration supports an exact correction."
             ),
         ))
 
@@ -347,38 +309,21 @@ def check_rh_bounds(df: pd.DataFrame, cfg: CheckerConfig) -> List[FlagCandidate]
 # ── Check 7: Cross-channel consistency ────────────────────────────────────────
 
 def check_cross_channel(df: pd.DataFrame, cfg: CheckerConfig) -> List[FlagCandidate]:
-    """
-    RH at saturation coinciding with high GHI suggests sensor blockage.
-    Genuine fog/rain does not normally coexist with > 200 W/m2.
-    """
+    """Retain rapid warming when drying and wind provide independent weather context."""
     flags: List[FlagCandidate] = []
 
-    if "rh_pct" not in df.columns or "ghi_wm2" not in df.columns:
+    if any(column not in df for column in ("temp_c", "rh_pct", "wind_kmh")):
         return flags
-
-    rh_sat   = df["rh_pct"] >= 100.0
-    ghi_high = df["ghi_wm2"] > 200.0
-    suspect  = (rh_sat & ghi_high).fillna(False)
-
-    for si, ei, cnt in _find_runs(df, suspect, cfg.sampling_interval_min):
-        # Only flag multi-record events to avoid single-record coincidences
-        if cnt < 6:
-            continue
-        ts = df["timestamp_utc"].iloc[si]
-        te = df["timestamp_utc"].iloc[ei]
-        dur_h = cnt * cfg.sampling_interval_min / 60
+    indexed = df.set_index("timestamp_utc")
+    prior = indexed.reindex(indexed.index - pd.Timedelta(hours=1))
+    warming = df.temp_c - prior.temp_c.to_numpy()
+    drying = df.rh_pct - prior.rh_pct.to_numpy()
+    coherent = (warming.ge(cfg.rapid_warming_c) & drying.le(-cfg.rapid_rh_drop_pct)
+                & df.wind_kmh.ge(cfg.warm_wind_min_kmh))
+    for si, ei, cnt in _find_runs(df, coherent, cfg.sampling_interval_min):
         flags.append(_flag_from_run(
-            df, si, ei, "rh_pct",
-            issue=(
-                f"RH at saturation with GHI > 200 W/m2 for {dur_h:.1f} h"
-                " -- sensor blockage suspected"
-            ),
-            action="exclude",
-            note=(
-                f"RH >= 100 % and GHI > 200 W/m2 for {cnt} intervals "
-                f"({ts.strftime('%Y-%m-%d %H:%M')} to {te.strftime('%Y-%m-%d %H:%M')}); "
-                "sunny conditions are inconsistent with genuine fog; suspect blocked or wet sensor."
-            ),
+            df, si, ei, "temp_c", "Rapid warming supported by drying wind", "keep",
+            f"Within an hour temperature rises by up to {warming.iloc[si:ei+1].max():.1f} C while RH falls by at least {abs(drying.iloc[si:ei+1].max()):.0f} points and wind exceeds {cfg.warm_wind_min_kmh:g} km/h; retain this coherent weather signal without claiming a specific mechanism."
         ))
 
     return flags
@@ -390,6 +335,8 @@ def run_all_checks(
     station_id: str,
     df: pd.DataFrame,
     cfg: CheckerConfig,
+    latitude: float | None = None,
+    longitude: float | None = None,
 ) -> List[FlagCandidate]:
     """
     Execute all validation checks for one station DataFrame.
@@ -397,21 +344,25 @@ def run_all_checks(
     """
     if df.empty:
         return []
+    night, daylight = interval_sun_masks(df.timestamp_utc, latitude, longitude, cfg.sampling_interval_min,
+                                        cfg.solar_night_elevation_deg, cfg.solar_day_elevation_deg)
     all_flags: List[FlagCandidate] = []
 
     checkers = [
-        ("completeness",    check_completeness),
-        ("physical bounds", check_physical_bounds),
-        ("flatlines",       check_flatlines),
-        ("pressure steps",  check_pressure_steps),
-        ("GHI night",       check_ghi_night),
-        ("RH bounds",       check_rh_bounds),
-        ("cross-channel",   check_cross_channel),
+        ("completeness", check_completeness),
+        ("bounds", check_physical_bounds),
+        ("flatline", lambda frame, config: check_flatlines(frame, config, daylight)),
+        ("pressure", check_pressure_steps),
+        ("night", lambda frame, config: check_ghi_night(frame, config, night)),
+        ("humidity", check_rh_bounds),
+        ("weather", check_cross_channel),
     ]
 
     for name, fn in checkers:
         try:
             results = fn(df, cfg)
+            for candidate in results:
+                candidate["check"] = name
             logger.debug("%s: %s found %d candidates.", station_id, name, len(results))
             all_flags.extend(results)
         except Exception as exc:

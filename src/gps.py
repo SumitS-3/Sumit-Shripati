@@ -48,6 +48,7 @@ class ClockSample:
 class GpsAnalysis:
     flags: List[dict]
     clock_samples: List[ClockSample]
+    position: Optional[Tuple[float, float]] = None
 
 
 def _nmea_checksum(sentence: str) -> Tuple[bool, Optional[str]]:
@@ -333,5 +334,6 @@ def analyze_gps(
         samples.append(ClockSample(logger_time, fix.gps_utc, offset))
     logger.info("%s GPS: %d parsed sentences, %d trusted positions, %d full-date clock samples.",
                 station_id, len(fixes), len(positions), len(samples))
-    return GpsAnalysis(flags, samples)
+    position = (median(fix.lat for fix in positions), median(fix.lon for fix in positions)) if len(positions) >= cfg.gps_clock_min_fixes else None
+    return GpsAnalysis(flags, samples, position)
 

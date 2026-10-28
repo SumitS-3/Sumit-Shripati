@@ -128,15 +128,18 @@ def enrich_with_maintenance(
     enriched: List[Dict] = []
     for flag in flags:
         ts = flag.get("start_utc")
-        if ts and not isinstance(ts, str):
+        if ts and not isinstance(ts, str) and flag.get("channel") != "metadata":
             flag_date = pd.Timestamp(ts).date()
             nearby = find_nearby_events(maintenance_events, station_id, flag_date, window_days=2)
+            nearby = [event for event in nearby if (
+                flag.get("channel") == "all" and event.is_data_interruption
+            ) or event.mentions_channel(flag.get("channel", ""))]
             if nearby:
-                maint_text = "; ".join(
-                    f"[{evt.date} maint: {evt.note[:80]}]" for evt in nearby
-                )
+                # Preserve a concise provenance reference, not a truncated quote
+                # that can omit the important part of the volunteer's evidence.
+                maint_text = ", ".join(str(event.date) for event in nearby)
                 flag = dict(flag)
-                flag["note"] = flag["note"].rstrip(".") + ". " + maint_text + "."
+                flag["note"] = flag["note"].rstrip(".") + f"; related maintenance record: {maint_text}."
         enriched.append(flag)
     return enriched
 

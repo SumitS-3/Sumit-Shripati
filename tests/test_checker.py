@@ -36,6 +36,7 @@ from src.gps import (
 )
 from src.maintenance import parse_maintenance_log
 from src.temporal import prepare_observations
+from src.solar import interval_sun_masks
 
 
 # ── Fixtures ────────────────────────────────────────────────────────────────
@@ -115,7 +116,9 @@ class TestPressureSteps:
         df.loc[50, "pressure_hpa"] = 860.0  # jump of ~10 hPa
         flags = check_pressure_steps(df, cfg)
         assert len(flags) >= 1
-        assert any("Pressure step" in f["issue"] for f in flags)
+        assert len(flags) == 1
+        assert flags[0]["issue"] == "Pressure isolated spike"
+        assert flags[0]["start_utc"] == flags[0]["end_utc"] == df.timestamp_utc.iloc[50]
 
     def test_gradual_change_no_flag(self, cfg):
         df = _make_df()
@@ -131,7 +134,7 @@ class TestRHBounds:
         df.loc[10:15, "rh_pct"] = 105.0
         flags = check_rh_bounds(df, cfg)
         assert len(flags) >= 1
-        assert all(f["action"] == "correct" for f in flags)
+        assert all(f["action"] == "exclude" for f in flags)
 
     def test_rh_at_100_not_flagged(self, cfg):
         df = _make_df()
@@ -148,7 +151,8 @@ class TestGHINight:
             "2025-03-15 05:00", periods=len(df), freq="10min"
         )
         df["ghi_wm2"] = 500.0  # clearly not nighttime-appropriate
-        flags = check_ghi_night(df, cfg)
+        night, _ = interval_sun_masks(df.timestamp_utc, 40, -105, cfg.sampling_interval_min)
+        flags = check_ghi_night(df, cfg, night)
         assert len(flags) >= 1
 
     def test_ghi_zero_at_night_ok(self, cfg):
@@ -184,7 +188,7 @@ class TestCrossChannel:
         df.loc[10:19, "rh_pct"] = 100.0
         df.loc[10:19, "ghi_wm2"] = 500.0
         flags = check_cross_channel(df, cfg)
-        assert len(flags) >= 1
+        assert flags == []  # Sunshine alone does not disprove fog or a passing shower.
 
 
 # ══════════════════════════════════════════════════════════════════════════════

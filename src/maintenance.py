@@ -12,7 +12,7 @@ import logging
 import re
 from dataclasses import dataclass
 from datetime import date
-from typing import Dict, List, Optional
+from typing import Dict, List
 
 logger = logging.getLogger(__name__)
 
@@ -40,6 +40,25 @@ class MaintenanceEvent:
     note: str
     is_sensor_change: bool
     is_data_interruption: bool
+
+    def mentions_channel(self, channel: str) -> bool:
+        patterns = {
+            "temp_c": r"temperature|thermometer|shield|paint",
+            "rh_pct": r"humid|hygrom|RH\b",
+            "pressure_hpa": r"pressure|barom",
+            "wind_kmh": r"\bwind\b|anemometer|cups",
+            "rain_mm": r"\brain\b|funnel|bucket",
+            "ghi_wm2": r"irradiance|pyranometer|sunlight",
+        }
+        return bool(re.search(patterns.get(channel, r"(?!)"), self.note, re.IGNORECASE))
+
+    @property
+    def rain_obstruction(self) -> bool:
+        text = self.note.lower()
+        negated = re.search(r"\b(?:not|no|without)\b.{0,20}\b(?:block|clog|leaves|nest)", text)
+        return self.mentions_channel("rain_mm") and not negated and bool(
+            re.search(r"block|clog|leaves|nest", text) and re.search(r"clean|clear|remov|unblock", text)
+        )
 
 
 def parse_maintenance_log(text: str) -> Dict[str, List[MaintenanceEvent]]:
@@ -73,7 +92,7 @@ def parse_maintenance_log(text: str) -> Dict[str, List[MaintenanceEvent]]:
         events.setdefault(sid, []).append(event)
         logger.debug("Maintenance event: %s %s — %s", date_str, sid, note[:60])
 
-    return events
+    return {sid: sorted(items, key=lambda event: event.date) for sid, items in events.items()}
 
 
 def find_nearby_events(
