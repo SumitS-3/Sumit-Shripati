@@ -7,11 +7,10 @@ from pathlib import Path
 import pandas as pd
 import pytest
 
-sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
-
 from src.checks import check_completeness, check_flatlines, check_physical_bounds
 from src.config import CheckerConfig
 from src.flagging import aggregate_flags, build_flag_rows
+from src.temporal import prepare_observations
 
 
 def observations(times, values=None):
@@ -59,11 +58,11 @@ def test_single_missing_sample_is_flagged():
 def test_separate_duplicate_incidents_and_triplicate_count():
     times = ["2025-03-01 00:00"] * 3 + ["2025-03-01 00:10"]
     times += ["2025-03-01 00:20"] * 2
-    flags = check_completeness(observations(times), CheckerConfig())
-    duplicates = [f for f in flags if f["issue"].startswith("Duplicate")]
+    _, flags = prepare_observations(observations(times), [], CheckerConfig())
+    duplicates = [f for f in flags if f["issue"] == "Conflicting duplicate timestamps"]
     assert len(duplicates) == 2
-    assert "3 rows share 1 timestamp(s)" in duplicates[0]["issue"]
-    assert "2 rows share 1 timestamp(s)" in duplicates[1]["issue"]
+    assert "all 3 different observations at 1 shared timestamps" in duplicates[0]["note"]
+    assert "all 2 different observations at 1 shared timestamps" in duplicates[1]["note"]
     assert all(f["start_utc"] == f["end_utc"] for f in duplicates)
 
 

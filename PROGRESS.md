@@ -29,40 +29,86 @@ splitting do not mean that more observations are faulty.
 
 Suggested commit: `fix: preserve precise problem intervals and ignore the data pack`
 
-## Repository review and Phase 2 - evidence and checker reliability (next)
+## Phase 2a - GPS, clock and replay integrity (complete)
+
+Phase 2 is split into two reviewable commits: timing integrity first, then the
+weather-specific decisions. Final flags and the coordinator report depend on both.
+
+- Shared schemas and a vectorized interval helper replace repeated channel lists,
+  timestamp formats and run detection. Pytest path configuration and fixture builders
+  are centralized; production code has no station IDs or anomaly dates embedded in it.
+- Ingestion preserves source sequence and CSV row numbers. Invalid timestamps fail
+  visibly, and observation and metadata reads no longer silently stop at a row cap.
+- GPS is parsed once per station. Clock evidence uses both RMC date and UTC time;
+  bad checksums, invalid fix statuses, unsupported modes and invalid fields are not
+  trusted. GGA time is never assigned an invented date. Position estimates use only
+  trusted fixes and a median rather than an outlier-sensitive mean.
+- A correction requires at least three independent stable RMC fixes, bounded GPS
+  gaps, and a unique observation break matching each GPS offset transition. Ambiguous
+  evidence withholds the station's timed observations instead of guessing. Default
+  thresholds are configurable and validated.
+- The working timeline is corrected before deduplication or weather checks. Exact
+  replays retain the first identical record; conflicting duplicates are withheld.
+  Correction notes identify source CSV rows and the signed timestamp adjustment.
+- Individual invalid GPS packets receive bounded metadata flags, not one long
+  exclusion spanning valid packets. GPS metadata exclusions do not count as weather
+  loss or dominate visit priority; fuller report/priority changes remain in Phase 3.
+- Missing station files, malformed station data, failed sensor/GPS checks and report
+  failures produce nonzero exit codes; station failures also appear in `flags.csv`.
+  Each station's metadata cadence is passed through the shared checking pipeline.
+
+Validation: `python -m pytest -q` passes **114 tests**, including full CLI fixtures
+using different dates/station IDs, forward/backward clock changes, midnight,
+multiple transitions, insufficient evidence, replay, conflicts, failure paths,
+source protection and an input with more than 100,000 rows.
+
+On the supplied pack, the shared rules identify S06 source rows 3411-6049 for a
+**+360 minute** timestamp correction, supported by 435 valid RMC fixes. All 6,048
+observations are retained; the earlier spurious pressure and sunlight flags disappear.
+For S08, 144 identical replay rows are removed; the 214 genuinely missing ten-minute
+slots remain flagged. All 19 source files were verified unchanged by SHA-256 hashes.
+
+Synthetic timing-stage measurement on this machine (6,048 observations and 1,008
+GPS samples per station, processed sequentially):
+
+| Stations | Elapsed | Peak incremental traced memory |
+| --- | --- | --- |
+| 8 | 0.07 s | 1.65 MiB |
+| 100 | 0.81 s | 1.82 MiB |
+| 500 | 3.69 s | 1.84 MiB |
+
+These figures cover only temporal normalization, exclude allocating the shared test
+input, and are not full-checker RAM or runtime claims. The CLI still retains station
+frames for the existing report; reducing that retention belongs with Phase 3.
+
+Diagnostic outputs are under ignored `scratch/phase2a/`. The root `flags.csv` and
+`report.html` remain the previous, preliminary deliverables until the remaining
+weather decisions are validated.
+
+Suggested commit: `feat: validate GPS clocks and resolve observation replays`
+
+## Repository review and Phase 2b - weather evidence (next)
 
 Reviewed the CLI, all source modules, tests, requirements, ignore rules, README,
 existing outputs, pack metadata and notes, and record/time summaries for all eight
-observation and GPS files. The following findings remain open:
+observation and GPS files. Timing findings are resolved in Phase 2a; the following
+weather findings remain open:
 
-- **Clock evidence is missed.** Valid, checksum-passing S06 RMC sentences show logger
-  timestamps approximately 360 minutes behind GPS time after the reboot. Preserve
-  source row order and compare full GPS date/time with logger timestamps before
-  interpreting sensor steps. The sorted S06 data has 72 rows at duplicate times.
-- **Replay and missing time need distinct treatments.** S08 has 288 rows sharing
-  144 timestamps on 5 April, plus 214 absent ten-minute slots on 16-18 March.
-  Compare duplicate row contents; do not select a supposedly plausible row without
-  evidence or treat a clock rollback as an ordinary replay.
 - **Corrections are too speculative.** Pressure changes are labelled correctable
   without a measured offset or its applicable period; RH is capped without
   establishing a calibration error. Establish a reproducible correction or withhold
   the affected values with an explicit reason.
-- **GPS validity is mishandled.** Position calculations include invalid fixes and
-  bad checksums, sentence counts overlap, and most GPS flags have no time bounds.
-  S05 has an apparent position disagreement requiring validation with trusted fixes.
+- **Location disagreement remains a judgement call.** S05's trusted GPS fixes and
+  its installation latitude disagree; establish what this means for station metadata
+  and spatial comparisons before making a correction.
 - **Weather checks need context.** Night hours assume Colorado, long saturation
   alone is treated as sensor failure, and station comparisons are absent. Inspect
   evidence around S04's shield-post painting and rain-gauge cleaning, S07's
   replacement anemometer, and S05's humidity note. These are investigation leads,
   not established fault intervals or automatic correction instructions.
-- **Input and failure handling need attention.** Ingestion sorts away clock order,
-  silently caps row counts, and can discard invalid timestamps with only a warning;
-  a missing station file can disappear from the result. Per-check and report failures
-  can be logged while the command still returns success. Validate configuration
-  and use station cadence consistently.
-- **Tests leave gaps.** The existing source-overwrite test is a placeholder;
-  meaningful GPS clock, replay, station-summary and failure-path tests are needed.
-  Benchmark data uses a different sunlight timing assumption from the checker,
+- **Remaining validation and benchmarking.** Validate weather threshold overrides
+  as well as timing settings. The older full-checker benchmark in `src/benchmark.py`
+  uses a different sunlight timing assumption from the checker,
   and its memory measurement excludes creation of the retained datasets.
 
 Implement and test these checks using evidence from the pack and independent

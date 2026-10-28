@@ -14,18 +14,15 @@ Output schema:
 from __future__ import annotations
 
 import logging
-from datetime import date
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List
 
 import pandas as pd
 
 from .config import CheckerConfig
 from .maintenance import MaintenanceEvent, find_nearby_events
+from .schema import FLAG_COLUMNS, TS_FMT
 
 logger = logging.getLogger(__name__)
-
-FLAG_COLUMNS = ["station_id", "channel", "start_utc", "end_utc", "issue", "action", "note"]
-TS_FMT = "%Y-%m-%d %H:%M"
 
 
 # ── CSV formula injection guard ───────────────────────────────────────────────

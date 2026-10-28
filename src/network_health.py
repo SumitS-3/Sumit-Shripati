@@ -10,7 +10,7 @@ from __future__ import annotations
 
 import logging
 from dataclasses import dataclass, field
-from typing import Dict, List, Optional, Set, Tuple
+from typing import Dict, List, Optional, Tuple
 
 import pandas as pd
 
@@ -57,6 +57,7 @@ class StationSummary:
     exclude_flags: List[dict] = field(default_factory=list)
     correct_flags: List[dict] = field(default_factory=list)
     keep_flags: List[dict] = field(default_factory=list)
+    metadata_flags: List[dict] = field(default_factory=list)
     has_duplicate_timestamps: bool = False
     has_data_gap: bool = False
     maintenance_notes: List[str] = field(default_factory=list)
@@ -121,11 +122,16 @@ def compute_station_summaries(
         else:
             st_flags = []
 
-        exclude_flags = [f for f in st_flags if f.get("action") == "exclude"]
-        correct_flags = [f for f in st_flags if f.get("action") == "correct"]
-        keep_flags    = [f for f in st_flags if f.get("action") == "keep"]
+        # Discarded GPS packets are not discarded weather observations or evidence
+        # of a repairable weather-sensor fault.
+        metadata_flags = [f for f in st_flags if f.get("channel") == "metadata"]
+        weather_flags = [f for f in st_flags if f.get("channel") != "metadata"]
+        exclude_flags = [f for f in weather_flags if f.get("action") == "exclude"]
+        correct_flags = [f for f in weather_flags if f.get("action") == "correct"]
+        keep_flags    = [f for f in weather_flags if f.get("action") == "keep"]
         has_gap       = any("gap" in f.get("issue", "").lower() for f in exclude_flags)
-        has_dup       = any("duplicate" in f.get("issue", "").lower() for f in (exclude_flags + correct_flags))
+        has_dup       = any(any(word in f.get("issue", "").lower() for word in ("duplicate", "replay"))
+                            for f in (exclude_flags + correct_flags))
 
         # Per-channel summaries
         channel_sums: Dict[str, ChannelSummary] = {}
@@ -167,6 +173,7 @@ def compute_station_summaries(
             exclude_flags=exclude_flags,
             correct_flags=correct_flags,
             keep_flags=keep_flags,
+            metadata_flags=metadata_flags,
             has_duplicate_timestamps=has_dup,
             has_data_gap=has_gap,
         )

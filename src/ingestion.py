@@ -7,12 +7,11 @@ Responsibilities:
   - CSV parsing with defensive error handling
   - Schema validation
   - Timestamp normalization
-  - Initial duplicate / sort repair
+  - Preserve source order and CSV row provenance for temporal analysis
 """
 from __future__ import annotations
 
 import logging
-import os
 import re
 from pathlib import Path
 from typing import Dict, List, Optional, Tuple
@@ -20,22 +19,9 @@ from typing import Dict, List, Optional, Tuple
 import pandas as pd
 
 from .config import CheckerConfig
+from .schema import NUMERIC_COLUMNS, REQUIRED_COLUMNS, TS_FMT
 
 logger = logging.getLogger(__name__)
-
-# Expected CSV columns and their dtypes (post-parse)
-REQUIRED_COLUMNS: List[str] = [
-    "timestamp_utc",
-    "temp_c",
-    "rh_pct",
-    "pressure_hpa",
-    "wind_kmh",
-    "wind_dir_deg",
-    "rain_mm",
-    "ghi_wm2",
-]
-
-NUMERIC_COLUMNS: List[str] = [c for c in REQUIRED_COLUMNS if c != "timestamp_utc"]
 
 STATIONS_SCHEMA: List[str] = [
     "station_id", "name", "lat", "lon", "elevation_m", "installed", "logger_interval_min"
@@ -47,7 +33,7 @@ STATIONS_SCHEMA: List[str] = [
 def _safe_resolve(base: Path, child: Path) -> Path:
     """Resolve child path and ensure it stays within base. Raises ValueError otherwise."""
     resolved = (base / child).resolve()
-    if not str(resolved).startswith(str(base.resolve())):
+    if not resolved.is_relative_to(base.resolve()):
         raise ValueError(f"Path traversal attempt: {child!r} escapes {base!r}")
     return resolved
 
@@ -85,7 +71,7 @@ def load_stations_meta(pack_root: Path) -> pd.DataFrame:
         return pd.DataFrame(columns=STATIONS_SCHEMA)
 
     try:
-        df = pd.read_csv(path, dtype=str, nrows=10_000)
+        df = pd.read_csv(path, dtype=str)
     except Exception as exc:
         logger.error("Cannot read stations.csv: %s", exc)
         return pd.DataFrame(columns=STATIONS_SCHEMA)
@@ -145,8 +131,8 @@ def load_station_data(
     Returns (DataFrame, warnings_list).
     DataFrame has:
       - timestamp_utc as tz-naive UTC datetime
-      - all numeric columns as float64
-      - is sorted by timestamp ascending
+      - all sensor columns parsed as numeric values
+      - source order preserved, with source_row counting from CSV line 2
     Duplicate timestamps are kept with a 'dup_ts' boolean column added.
     Returns (None, errors) if the file is unreadable or has no valid rows.
     """
@@ -165,13 +151,13 @@ def load_station_data(
         df = pd.read_csv(
             path,
             dtype=str,      # read everything as string first for safe validation
-            nrows=100_000,  # resource guard
         )
     except Exception as exc:
         return None, [f"Cannot read {path.name}: {exc}"]
 
     if df.empty:
         return None, [f"{path.name} is empty."]
+    df["source_row"] = df.index + 2
 
     # ── Column check ────────────────────────────────────────────────────
     missing_cols = [c for c in REQUIRED_COLUMNS if c not in df.columns]
@@ -184,14 +170,11 @@ def load_station_data(
 
     # Sanitise: truncate very long strings before parsing (injection guard)
     df["timestamp_utc"] = df["timestamp_utc"].astype(str).str[:30]
-    ts = pd.to_datetime(df["timestamp_utc"], format="%Y-%m-%d %H:%M", errors="coerce")
+    ts = pd.to_datetime(df["timestamp_utc"], format=TS_FMT, errors="coerce")
     bad_ts = ts.isna().sum()
     if bad_ts > 0:
-        warnings.append(f"{station_id}: {bad_ts} unparseable timestamp(s) dropped.")
+        return None, [f"{station_id}: {bad_ts} unparseable timestamp(s); refusing to silently discard rows."]
     df["timestamp_utc"] = ts
-    df = df.dropna(subset=["timestamp_utc"])
-    if df.empty:
-        return None, [f"{station_id}: No parseable timestamps."]
 
     # ── Numeric conversion ───────────────────────────────────────────────
     for col in NUMERIC_COLUMNS:
@@ -205,8 +188,8 @@ def load_station_data(
     # Replace infinities
     df = df.replace([float("inf"), float("-inf")], float("nan"))
 
-    # ── Sort ──────────────────────────────────────────────────────────
-    df = df.sort_values("timestamp_utc").reset_index(drop=True)
+    # Sorting here would destroy the evidence needed to distinguish rollback from replay.
+    df = df.reset_index(drop=True)
 
     # ── Mark duplicates ───────────────────────────────────────────────
     df["dup_ts"] = df.duplicated("timestamp_utc", keep=False)
@@ -220,8 +203,8 @@ def load_station_data(
     logger.info(
         "%s: loaded %d rows (%s to %s); %d dup_ts, %d missing-ts dropped.",
         station_id, len(df),
-        df["timestamp_utc"].iloc[0].strftime("%Y-%m-%d"),
-        df["timestamp_utc"].iloc[-1].strftime("%Y-%m-%d"),
+        df["timestamp_utc"].min().strftime("%Y-%m-%d"),
+        df["timestamp_utc"].max().strftime("%Y-%m-%d"),
         dup_count, bad_ts,
     )
     return df, warnings

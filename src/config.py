@@ -6,8 +6,10 @@ Override via a config.json file in the data-pack root if needed.
 """
 from __future__ import annotations
 import json
+import math
 import os
-from dataclasses import dataclass, field, asdict
+from copy import deepcopy
+from dataclasses import dataclass, field, asdict, fields
 from typing import Dict, Any
 
 
@@ -32,6 +34,13 @@ PHYSICAL_BOUNDS: Dict[str, Dict[str, float]] = {
 class CheckerConfig:
     # Sampling
     sampling_interval_min: int = 10          # expected 10-minute intervals
+
+    # GPS clock corrections require repeated, stable full-date RMC evidence.
+    gps_clock_tolerance_seconds: float = 5.0
+    gps_clock_min_fixes: int = 3
+    gps_clock_max_gap_hours: float = 3.0
+    gps_position_tolerance_km: float = 1.0
+    gps_jump_tolerance_km: float = 0.5
 
     # Flatline detection: minimum consecutive identical readings to flag
     flatline_min_records: Dict[str, int] = field(default_factory=lambda: {
@@ -74,20 +83,37 @@ class CheckerConfig:
 
     # Physical bounds (can be overridden per deployment)
     physical_bounds: Dict[str, Dict[str, float]] = field(
-        default_factory=lambda: PHYSICAL_BOUNDS
+        default_factory=lambda: deepcopy(PHYSICAL_BOUNDS)
     )
+
+    def __post_init__(self) -> None:
+        for name in ("sampling_interval_min", "gps_clock_min_fixes"):
+            value = getattr(self, name)
+            if type(value) is not int or value <= 0:
+                raise ValueError(f"{name} must be a positive integer")
+        if self.gps_clock_min_fixes < 3:
+            raise ValueError("gps_clock_min_fixes must be at least 3 independent fixes")
+        for name in ("gps_clock_tolerance_seconds", "gps_clock_max_gap_hours",
+                     "gps_position_tolerance_km", "gps_jump_tolerance_km"):
+            value = getattr(self, name)
+            if isinstance(value, bool) or not isinstance(value, (int, float)) or not math.isfinite(value) or value <= 0:
+                raise ValueError(f"{name} must be a finite positive number")
+        if self.gps_clock_tolerance_seconds >= 30:
+            raise ValueError("gps_clock_tolerance_seconds must be below half a minute")
 
     @classmethod
     def from_file(cls, path: str) -> "CheckerConfig":
         """Load config overrides from a JSON file (missing keys use defaults)."""
-        cfg = cls()
-        if os.path.isfile(path):
-            with open(path, encoding="utf-8") as f:
-                overrides: Dict[str, Any] = json.load(f)
-            for k, v in overrides.items():
-                if hasattr(cfg, k):
-                    setattr(cfg, k, v)
-        return cfg
+        if not os.path.isfile(path):
+            return cls()
+        with open(path, encoding="utf-8") as f:
+            overrides = json.load(f)
+        if not isinstance(overrides, dict):
+            raise ValueError("configuration must be a JSON object")
+        unknown = set(overrides) - {item.name for item in fields(cls)}
+        if unknown:
+            raise ValueError(f"unknown configuration settings: {', '.join(sorted(unknown))}")
+        return cls(**overrides)
 
     def to_dict(self) -> Dict[str, Any]:
         return asdict(self)

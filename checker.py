@@ -12,15 +12,15 @@ Outputs (to current working directory):
 Exit codes:
     0 — completed successfully
     1 — fatal input error (missing directory, unreadable files)
-    2 — partial completion (some stations failed)
+    2 — partial completion (a station or report failed)
 """
 from __future__ import annotations
 
 import argparse
 import logging
-import os
 import sys
 import time
+from dataclasses import replace
 from pathlib import Path
 from typing import Dict, List
 
@@ -41,10 +41,21 @@ from src.ingestion import (
 )
 from src.checks import run_all_checks
 from src.flagging import build_flag_rows, write_flags_csv
-from src.gps import check_gps_integrity
+from src.gps import analyze_gps
+from src.temporal import prepare_observations
+from src.schema import FLAG_COLUMNS
 from src.maintenance import parse_maintenance_log
 from src.network_health import compute_station_summaries, recommend_technician_visit
 from src.report import generate_html_report
+
+
+def _failure_flag(station_id: str, reason: str) -> dict:
+    """A failed station remains visible in the machine-readable output."""
+    return {
+        "station_id": station_id, "channel": "metadata", "start_utc": "", "end_utc": "",
+        "issue": "Station analysis incomplete", "action": "exclude",
+        "note": f"Withhold this station from the summary until the failed analysis is rerun: {reason}.",
+    }
 
 # ── Logging setup ─────────────────────────────────────────────────────────────
 
@@ -138,7 +149,13 @@ def main(argv: List[str] | None = None) -> int:
 
     # ── Load configuration ────────────────────────────────────────────────
     config_path = args.config or str(pack_root / "config.json")
-    cfg = CheckerConfig.from_file(config_path)
+    try:
+        if args.config and not Path(config_path).is_file():
+            raise ValueError(f"configuration file not found: {config_path}")
+        cfg = CheckerConfig.from_file(config_path)
+    except (OSError, ValueError, TypeError) as exc:
+        logger.error("Invalid configuration: %s", exc)
+        return 1
     logger.info("Loaded configuration (sampling_interval=%d min).", cfg.sampling_interval_min)
 
     # ── Load inputs ───────────────────────────────────────────────────────
@@ -160,9 +177,13 @@ def main(argv: List[str] | None = None) -> int:
             meta_by_id[sid] = row.to_dict()
 
     # ── Process each station ──────────────────────────────────────────────
-    all_flag_rows: List[dict] = []
+    absent_stations = sorted(set(meta_by_id) - set(station_files))
+    all_flag_rows: List[dict] = [
+        _failure_flag(sid, "station listed in stations.csv has no observation file")
+        for sid in absent_stations
+    ]
     station_data: Dict[str, pd.DataFrame] = {}
-    n_failed = 0
+    n_failed = len(absent_stations)
 
     for station_id, csv_path in sorted(station_files.items()):
         logger.info("Processing %s ...", station_id)
@@ -175,36 +196,34 @@ def main(argv: List[str] | None = None) -> int:
         if df is None:
             logger.error("Skipping %s: could not load data.", station_id)
             n_failed += 1
+            all_flag_rows.append(_failure_flag(station_id, "; ".join(load_warnings)))
             continue
 
-        station_data[station_id] = df
-
-        # Run all validation checks
+        # Establish time and replay handling before interpreting sensor changes.
         try:
-            candidates = run_all_checks(station_id, df, cfg)
+            meta = meta_by_id.get(station_id, {})
+            cadence = int(meta.get("logger_interval_min", cfg.sampling_interval_min))
+            station_cfg = replace(cfg, sampling_interval_min=cadence,
+                                  gap_threshold_min=max(cadence, cfg.gap_threshold_min))
+            samples = []
+            candidates = []
+            if station_id in gps_files:
+                analysis = analyze_gps(station_id, gps_files[station_id],
+                                       meta.get("lat"), meta.get("lon"), station_cfg)
+                samples = analysis.clock_samples
+                candidates.extend(analysis.flags)
+            df, temporal_flags = prepare_observations(df, samples, station_cfg)
+            candidates.extend(temporal_flags)
+            candidates.extend(run_all_checks(station_id, df, station_cfg))
         except Exception as exc:
             logger.error("Checks failed for %s: %s", station_id, exc, exc_info=True)
             n_failed += 1
+            all_flag_rows.append(_failure_flag(station_id, str(exc)))
             continue
-
-        # GPS checks
-        if station_id in gps_files:
-            meta = meta_by_id.get(station_id, {})
-            meta_lat = meta.get("lat") if isinstance(meta.get("lat"), float) else None
-            meta_lon = meta.get("lon") if isinstance(meta.get("lon"), float) else None
-            try:
-                gps_flags = check_gps_integrity(
-                    station_id,
-                    gps_files[station_id],
-                    meta_lat,
-                    meta_lon,
-                )
-                candidates.extend(gps_flags)
-            except Exception as exc:
-                logger.warning("GPS check failed for %s: %s", station_id, exc)
+        station_data[station_id] = df
 
         # Build and collect flag rows
-        flag_rows = build_flag_rows(station_id, candidates, maintenance_events, cfg)
+        flag_rows = build_flag_rows(station_id, candidates, maintenance_events, station_cfg)
         all_flag_rows.extend(flag_rows)
         logger.info("%s: %d final flags.", station_id, len(flag_rows))
 
@@ -218,7 +237,7 @@ def main(argv: List[str] | None = None) -> int:
     # ── Validate output schema ────────────────────────────────────────────
     try:
         out_df = pd.read_csv(flags_path)
-        required = ["station_id", "channel", "start_utc", "end_utc", "issue", "action", "note"]
+        required = FLAG_COLUMNS
         missing = [c for c in required if c not in out_df.columns]
         if missing:
             logger.error("flags.csv missing columns: %s", missing)
@@ -240,7 +259,8 @@ def main(argv: List[str] | None = None) -> int:
         generate_html_report(summaries, flags_for_report, tech_station, runner_up, report_path)
     except Exception as exc:
         logger.error("Report generation failed: %s", exc, exc_info=True)
-        # Non-fatal: flags.csv is already written
+        # flags.csv remains available, but the run did not produce every deliverable.
+        return 2
 
     # ── Summary ───────────────────────────────────────────────────────────
     elapsed = time.perf_counter() - t_start

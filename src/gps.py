@@ -10,15 +10,17 @@ import logging
 import math
 import re
 from dataclasses import dataclass
+from datetime import datetime
 from pathlib import Path
+from statistics import median
 from typing import Iterator, List, Optional, Tuple
+
+from .config import CheckerConfig
 
 logger = logging.getLogger(__name__)
 
 # Maximum line length we'll parse (guards against maliciously large fields)
 _MAX_LINE_LEN = 200
-# Approximate degrees-per-metre at mid-latitudes (used for location-jump check)
-_DEG_PER_KM = 1.0 / 111.0
 
 
 @dataclass(frozen=True)
@@ -32,16 +34,30 @@ class GpsFix:
     alt_m: Optional[float]      # altitude in metres (GPGGA only)
     checksum_ok: bool
     raw_line: str               # preserved for debugging
+    gps_utc: Optional[datetime] = None  # full RMC date/time; GGA has no date
+
+
+@dataclass(frozen=True)
+class ClockSample:
+    logger_utc: datetime
+    gps_utc: datetime
+    correction_seconds: Optional[int]  # None means not close to a constant whole-minute offset
+
+
+@dataclass
+class GpsAnalysis:
+    flags: List[dict]
+    clock_samples: List[ClockSample]
 
 
 def _nmea_checksum(sentence: str) -> Tuple[bool, Optional[str]]:
     """
     Verify NMEA XOR checksum.
     Returns (is_valid, computed_hex).
-    Sentence should NOT include the leading '$'.
+    Sentence includes the leading '$' and exactly two trailing checksum digits.
     """
     star = sentence.rfind("*")
-    if star < 0 or star + 3 > len(sentence):
+    if not sentence.startswith("$") or star < 0 or star + 3 != len(sentence):
         return False, None
     body = sentence[1:star]           # between $ and *
     declared = sentence[star + 1: star + 3].upper()
@@ -57,7 +73,7 @@ def _dddmm_to_decimal(raw: str, hemi: str) -> Optional[float]:
     Convert NMEA DDDMM.MMMM + hemisphere to decimal degrees.
     Returns None on parse failure.
     """
-    if not raw or not hemi:
+    if not raw or hemi not in ("N", "S", "E", "W"):
         return None
     try:
         raw = raw.strip()
@@ -70,11 +86,27 @@ def _dddmm_to_decimal(raw: str, hemi: str) -> Optional[float]:
             return None
         degrees = float(raw[:deg_digits])
         minutes = float(raw[deg_digits:])
+        limit = 90 if hemi in ("N", "S") else 180
+        if not (0 <= degrees <= limit and 0 <= minutes < 60):
+            return None
         decimal = degrees + minutes / 60.0
+        if decimal > limit:
+            return None
         if hemi in ("S", "W"):
             decimal = -decimal
         return decimal
     except (ValueError, IndexError):
+        return None
+
+
+def _rmc_datetime(time_field: str, date_field: str) -> Optional[datetime]:
+    """Use both RMC fields; never invent a date for a time-only GGA sentence."""
+    try:
+        if not re.fullmatch(r"\d{6}(?:\.\d+)?", time_field) or not re.fullmatch(r"\d{6}", date_field):
+            return None
+        fmt = "%d%m%y%H%M%S.%f" if "." in time_field else "%d%m%y%H%M%S"
+        return datetime.strptime(date_field + time_field, fmt)
+    except ValueError:
         return None
 
 
@@ -83,7 +115,8 @@ def _parse_gprmc(parts: List[str], raw: str, logger_ts: str, cs_ok: bool) -> Opt
     # $GPRMC,HHMMSS,A/V,lat,N/S,lon,E/W,speed,course,DDMMYY,...
     if len(parts) < 10:
         return None
-    valid = parts[2].strip().upper() == "A"
+    mode = parts[12].strip().upper() if len(parts) > 12 else ""
+    valid = parts[2].strip().upper() == "A" and mode in ("", "A", "D")
     lat = _dddmm_to_decimal(parts[3], parts[4].strip().upper())
     lon = _dddmm_to_decimal(parts[5], parts[6].strip().upper())
     if lat is not None and (lat < -90 or lat > 90):
@@ -100,6 +133,7 @@ def _parse_gprmc(parts: List[str], raw: str, logger_ts: str, cs_ok: bool) -> Opt
         alt_m=None,
         checksum_ok=cs_ok,
         raw_line=raw,
+        gps_utc=_rmc_datetime(parts[1], parts[9]),
     )
 
 
@@ -112,7 +146,8 @@ def _parse_gpgga(parts: List[str], raw: str, logger_ts: str, cs_ok: bool) -> Opt
         fix_q = int(parts[6].strip()) if parts[6].strip() else 0
     except ValueError:
         fix_q = 0
-    valid = fix_q >= 1
+    # Estimated, manual and simulated positions are not trusted GPS fixes.
+    valid = fix_q in (1, 2, 3, 4, 5)
     lat = _dddmm_to_decimal(parts[2], parts[3].strip().upper())
     lon = _dddmm_to_decimal(parts[4], parts[5].strip().upper())
     if lat is not None and (lat < -90 or lat > 90):
@@ -148,7 +183,7 @@ def parse_nmea_file(path: Path) -> Iterator[GpsFix]:
         file_size = path.stat().st_size
     except OSError:
         logger.warning("Cannot stat GPS file %s", path)
-        return
+        raise
 
     if file_size > 20 * 1024 * 1024:  # 20 MB guard
         logger.warning("GPS file %s is unusually large (%d bytes); parsing anyway.", path, file_size)
@@ -175,7 +210,7 @@ def parse_nmea_file(path: Path) -> Iterator[GpsFix]:
 
                 cs_ok, _ = _nmea_checksum(sentence)
                 # Strip '$', split on ',' (ignore trailing * checksum field)
-                inner = sentence.lstrip("$")
+                inner = sentence[1:].split("*", 1)[0]
                 parts = inner.split(",")
                 if not parts:
                     continue
@@ -191,10 +226,14 @@ def parse_nmea_file(path: Path) -> Iterator[GpsFix]:
                     logger.debug("GPS parse error line %d: %s", lineno, exc)
                     continue
 
+                if fix is None and stype in ("GPRMC", "GPGGA"):
+                    # Keep truncated supported packets visible in integrity counts.
+                    fix = GpsFix(logger_ts, stype, "", False, None, None, None, cs_ok, sentence)
                 if fix is not None:
                     yield fix
     except OSError as exc:
         logger.error("Cannot read GPS file %s: %s", path, exc)
+        raise
 
 
 def haversine_km(lat1: float, lon1: float, lat2: float, lon2: float) -> float:
@@ -207,114 +246,92 @@ def haversine_km(lat1: float, lon1: float, lat2: float, lon2: float) -> float:
     return R * 2 * math.atan2(math.sqrt(a), math.sqrt(1 - a))
 
 
-def check_gps_integrity(
+def analyze_gps(
     station_id: str,
     gps_path: Path,
     meta_lat: Optional[float],
     meta_lon: Optional[float],
-) -> List[dict]:
-    """
-    Perform GPS integrity checks. Returns list of flag-candidate dicts:
-        {channel, start_utc, end_utc, issue, action, note}
+    cfg: CheckerConfig,
+) -> GpsAnalysis:
+    """Parse once per station; share trusted evidence with the temporal pipeline.
 
-    Checks:
-      1. Checksum failures
-      2. Invalid fix (status V in GPRMC, fix_q=0 in GPGGA)
-      3. Coordinate out of bounds
-      4. Position inconsistency vs. install-sheet lat/lon
-      5. Large between-fix jumps (station should be stationary)
+    Only checksum-passing valid fixes contribute to position or clock evidence.
+    Reference for RMC date/time and validity: https://gpsd.io/NMEA.html
     """
     flags: List[dict] = []
-    fixes: List[GpsFix] = []
-
-    bad_cs = 0
-    invalid_fix = 0
-
-    for fix in parse_nmea_file(gps_path):
-        if not fix.checksum_ok:
-            bad_cs += 1
-        if not fix.valid:
-            invalid_fix += 1
-        if fix.lat is not None and fix.lon is not None:
-            fixes.append(fix)
-
-    total = len(fixes) + bad_cs + invalid_fix
-    logger.info(
-        "%s GPS: %d usable fixes, %d bad checksums, %d invalid status sentences.",
-        station_id, len(fixes), bad_cs, invalid_fix
-    )
-
-    if bad_cs > 0:
-        flags.append({
-            "channel": "metadata",
-            "start_utc": "",
-            "end_utc": "",
-            "issue": f"GPS: {bad_cs} sentences with failed NMEA checksum",
-            "action": "keep",
-            "note": (
-                f"{bad_cs} of {total} GPS sentences have incorrect checksums; "
-                "data may have been corrupted in transmission."
-            ),
-        })
-
-    if invalid_fix > 0:
-        flags.append({
-            "channel": "metadata",
-            "start_utc": "",
-            "end_utc": "",
-            "issue": f"GPS: {invalid_fix} sentences report no valid fix",
-            "action": "keep",
-            "note": (
-                f"{invalid_fix} sentences report status V (no fix) or fix_quality=0; "
-                "clock discipline may have been lost briefly."
-            ),
-        })
-
+    fixes = list(parse_nmea_file(gps_path))
     if not fixes:
-        return flags
+        raise ValueError(f"{station_id}: no supported GPS sentences could be parsed")
 
-    # ── Position vs. install sheet ─────────────────────────────────────────
-    if meta_lat is not None and meta_lon is not None:
-        lats = [f.lat for f in fixes if f.lat is not None]
-        lons = [f.lon for f in fixes if f.lon is not None]
-        if lats and lons:
-            mean_lat = sum(lats) / len(lats)
-            mean_lon = sum(lons) / len(lons)
-            dist_km = haversine_km(meta_lat, meta_lon, mean_lat, mean_lon)
-            if dist_km > 1.0:
-                flags.append({
-                    "channel": "metadata",
-                    "start_utc": "",
-                    "end_utc": "",
-                    "issue": f"GPS mean position {dist_km:.2f} km from install-sheet location",
-                    "action": "keep",
-                    "note": (
-                        f"GPS centroid ({mean_lat:.4f}, {mean_lon:.4f}) is {dist_km:.2f} km "
-                        f"from install-sheet ({meta_lat:.4f}, {meta_lon:.4f}); "
-                        "verify station ID or check install-sheet accuracy."
-                    ),
-                })
+    def metadata_flag(subset: List[GpsFix], issue: str, note: str, action: str = "exclude") -> None:
+        times = []
+        for fix in subset:
+            try:
+                value = datetime.fromisoformat(fix.logger_ts_str)
+                if value.tzinfo is None:
+                    times.append(value)
+            except ValueError:
+                pass
+        flags.append({
+            "channel": "metadata", "start_utc": min(times) if times else "",
+            "end_utc": max(times) if times else "", "issue": issue,
+            "action": action, "note": note,
+        })
 
-    # ── Between-fix jumps > 0.5 km (station should be stationary) ─────────
-    prev = fixes[0]
-    for curr in fixes[1:]:
-        if prev.lat is None or curr.lat is None:
-            prev = curr
+    bad_checksums = [fix for fix in fixes if not fix.checksum_ok]
+    invalid_status = [fix for fix in fixes if fix.checksum_ok and not fix.valid]
+    trusted = [fix for fix in fixes if fix.checksum_ok and fix.valid]
+
+    def packet_flags(subset: List[GpsFix], issue: str, reason: str) -> None:
+        by_time: dict[str, List[GpsFix]] = {}
+        for fix in subset:
+            by_time.setdefault(fix.logger_ts_str[:16], []).append(fix)
+        for packets in by_time.values():
+            metadata_flag(packets, issue,
+                          f"Ignore {len(packets)} GPS sentence(s) at this logger time for {reason} ({len(subset)} of {len(fixes)} parsed sentences in this pack); this alone does not invalidate weather observations.")
+
+    for subset, issue in [(bad_checksums, "GPS checksum failure"),
+                          (invalid_status, "GPS fix not valid")]:
+        if subset:
+            packet_flags(subset, issue, "clock and position evidence")
+
+    bad_fields = [fix for fix in trusted if fix.lat is None or fix.lon is None or
+                  (fix.sentence_type == "GPRMC" and fix.gps_utc is None)]
+    positions = [fix for fix in trusted if fix.lat is not None and fix.lon is not None and
+                 (fix.sentence_type != "GPRMC" or fix.gps_utc is not None)]
+    if bad_fields:
+        packet_flags(bad_fields, "GPS field invalid", "invalid coordinates or full RMC date/time")
+
+    if positions and meta_lat is not None and meta_lon is not None and math.isfinite(meta_lat) and math.isfinite(meta_lon):
+        center_lat = median(fix.lat for fix in positions)
+        center_lon = median(fix.lon for fix in positions)
+        distance = haversine_km(meta_lat, meta_lon, center_lat, center_lon)
+        if distance > cfg.gps_position_tolerance_km:
+            metadata_flag(positions, "GPS and installation position disagree",
+                          f"Median of {len(positions)} valid fixes is ({center_lat:.5f}, {center_lon:.5f}), {distance:.2f} km from the install sheet; retain weather values but verify the station location before spatial comparisons.",
+                          action="keep")
+    for previous, current in zip(positions, positions[1:]):
+        distance = haversine_km(previous.lat, previous.lon, current.lat, current.lon)
+        if distance > cfg.gps_jump_tolerance_km:
+            metadata_flag([previous, current], "GPS position discontinuity",
+                          f"Two checksum-passing valid positions differ by {distance:.2f} km; withhold these position fixes until checked.")
+
+    samples = []
+    for fix in trusted:
+        if fix.gps_utc is None or fix.lat is None or fix.lon is None:
             continue
-        d = haversine_km(prev.lat, prev.lon, curr.lat, curr.lon)
-        if d > 0.5:
-            flags.append({
-                "channel": "metadata",
-                "start_utc": curr.logger_ts_str,
-                "end_utc": curr.logger_ts_str,
-                "issue": f"GPS position jump {d:.2f} km at {curr.logger_ts_str}",
-                "action": "keep",
-                "note": (
-                    f"Consecutive GPS fixes are {d:.2f} km apart; "
-                    "station should be stationary — possible multipath or temporary satellite geometry issue."
-                ),
-            })
-        prev = curr
-
-    return flags
+        try:
+            logger_time = datetime.fromisoformat(fix.logger_ts_str)
+            if logger_time.tzinfo is not None:
+                raise ValueError("logger timestamp must be UTC without a timezone suffix")
+        except ValueError:
+            metadata_flag([fix], "GPS logger timestamp invalid", "Cannot compare this GPS sentence with a valid UTC logger timestamp.")
+            continue
+        seconds = (fix.gps_utc - logger_time).total_seconds()
+        rounded = round(seconds / 60) * 60
+        offset = rounded if abs(seconds - rounded) <= cfg.gps_clock_tolerance_seconds else None
+        samples.append(ClockSample(logger_time, fix.gps_utc, offset))
+    logger.info("%s GPS: %d parsed sentences, %d trusted positions, %d full-date clock samples.",
+                station_id, len(fixes), len(positions), len(samples))
+    return GpsAnalysis(flags, samples)
 

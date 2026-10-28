@@ -19,12 +19,13 @@ Flag candidate dict keys:
 from __future__ import annotations
 
 import logging
-from typing import Any, Dict, List, Tuple
+from typing import Any, Dict, List
 
-import numpy as np
 import pandas as pd
 
 from .config import CheckerConfig
+from .intervals import find_runs as _find_runs
+from .schema import NUMERIC_COLUMNS
 
 logger = logging.getLogger(__name__)
 
@@ -32,39 +33,6 @@ FlagCandidate = Dict[str, Any]
 
 
 # ── Helper: run-length encoding ───────────────────────────────────────────────
-
-def _find_runs(
-    series: pd.Series | pd.DataFrame,
-    condition: pd.Series,
-    max_gap_min: int | None = None,
-    break_before: pd.Series | None = None,
-) -> List[Tuple[int, int, int]]:
-    """
-    Find contiguous runs where `condition` is True.
-    Returns list of (start_iloc, end_iloc, run_length).  Both bounds inclusive.
-    """
-    runs: List[Tuple[int, int, int]] = []
-    arr = condition.values
-    time_breaks = np.zeros(len(arr), dtype=bool)
-    if break_before is not None:
-        time_breaks |= break_before.to_numpy(dtype=bool)
-    if max_gap_min is not None:
-        elapsed = series["timestamp_utc"].diff()
-        time_breaks |= ((elapsed > pd.Timedelta(minutes=max_gap_min)) |
-                        (elapsed <= pd.Timedelta(0))).to_numpy()
-    n = len(arr)
-    i = 0
-    while i < n:
-        if arr[i]:
-            j = i + 1
-            while j < n and arr[j] and not time_breaks[j]:
-                j += 1
-            runs.append((i, j - 1, j - i))
-            i = j
-        else:
-            i += 1
-    return runs
-
 
 def _flag_from_run(
     df: pd.DataFrame,
@@ -91,8 +59,10 @@ def check_completeness(df: pd.DataFrame, cfg: CheckerConfig) -> List[FlagCandida
     """
     Detect:
       - Gaps larger than cfg.gap_threshold_min
-      - Duplicate timestamps
       - NaN values in numeric columns
+
+    Clock changes and duplicates are resolved by temporal.prepare_observations
+    before these checks; this function never chooses between source rows.
     """
     flags: List[FlagCandidate] = []
     interval_s = cfg.sampling_interval_min * 60
@@ -122,31 +92,8 @@ def check_completeness(df: pd.DataFrame, cfg: CheckerConfig) -> List[FlagCandida
             ),
         })
 
-    # ── Duplicate timestamps ───────────────────────────────────────────────
-    dup_col = df.get("dup_ts", pd.Series(False, index=df.index))
-    dup_rows = df[dup_col]
-    # Work with unique timestamps so repeated rows stay in the same incident.
-    dup_counts = dup_rows.groupby("timestamp_utc").size().sort_index()
-    dup_groups = dup_counts.index.to_series().diff().gt(pd.Timedelta(seconds=interval_s)).cumsum()
-    for _, counts in dup_counts.groupby(dup_groups):
-        t0, t1 = counts.index[0], counts.index[-1]
-        n = int(counts.sum())
-        flags.append({
-            "channel":   "all",
-            "start_utc": t0,
-            "end_utc":   t1,
-            "issue":     f"Duplicate timestamps: {n} rows share {len(counts)} timestamp(s)",
-            "action":    "correct",
-            "note":      (
-                f"{n} rows have duplicate timestamps "
-                f"({t0.strftime('%Y-%m-%d %H:%M')} to {t1.strftime('%Y-%m-%d %H:%M')}); "
-                "retain the row with plausible sensor values and discard the other."
-            ),
-        })
-
     # ── Missing values ─────────────────────────────────────────────────────
-    numeric_cols = [c for c in df.columns if c not in ("timestamp_utc", "dup_ts")]
-    for col in numeric_cols:
+    for col in NUMERIC_COLUMNS:
         if col not in df.columns:
             continue
         for si, ei, nan_count in _find_runs(df, df[col].isna(), cfg.sampling_interval_min):
@@ -448,6 +395,8 @@ def run_all_checks(
     Execute all validation checks for one station DataFrame.
     Returns combined list of FlagCandidate dicts.
     """
+    if df.empty:
+        return []
     all_flags: List[FlagCandidate] = []
 
     checkers = [
@@ -469,6 +418,7 @@ def run_all_checks(
             logger.error(
                 "%s: check '%s' failed: %s", station_id, name, exc, exc_info=True
             )
+            raise
 
     logger.info(
         "%s: total %d raw flag candidates before aggregation.",

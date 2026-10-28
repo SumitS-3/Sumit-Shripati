@@ -14,7 +14,7 @@ import html
 import logging
 import os
 import tempfile
-from datetime import datetime
+from datetime import datetime, timezone
 from typing import Dict, List, Optional
 
 from .network_health import StationSummary
@@ -66,7 +66,7 @@ def generate_html_report(
     Write a self-contained HTML network health report.
     Uses atomic replacement (temp file → rename).
     """
-    now_str = datetime.utcnow().strftime("%Y-%m-%d %H:%M UTC")
+    now_str = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M UTC")
     n_stations = len(summaries)
     n_exclude  = sum(1 for f in all_flags if f.get("action") == "exclude")
     n_correct  = sum(1 for f in all_flags if f.get("action") == "correct")
@@ -91,8 +91,8 @@ def generate_html_report(
     # ── Key findings list ─────────────────────────────────────────────────
     # Show the top flags (exclude first, then correct, limit to 20)
     sorted_flags = (
-        [f for f in all_flags if f.get("action") == "exclude"][:12]
-        + [f for f in all_flags if f.get("action") == "correct"][:6]
+        [f for f in all_flags if f.get("action") == "exclude" and f.get("channel") != "metadata"][:12]
+        + [f for f in all_flags if f.get("action") == "correct" and f.get("channel") != "metadata"][:6]
     )
     flag_rows = []
     for f in sorted_flags:

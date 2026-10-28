@@ -3,22 +3,12 @@ Automated test suite for the Ridgeline weather-station checker.
 
 Run:  python -m pytest tests/ -v
 """
-import csv
 import os
-import sys
 import tempfile
-from datetime import datetime
-from pathlib import Path
 
 import numpy as np
 import pandas as pd
 import pytest
-
-# Add project root to path
-_HERE = Path(__file__).resolve().parent
-_ROOT = _HERE.parent
-if str(_ROOT) not in sys.path:
-    sys.path.insert(0, str(_ROOT))
 
 from src.config import CheckerConfig
 from src.checks import (
@@ -42,14 +32,10 @@ from src.flagging import (
 from src.gps import (
     _dddmm_to_decimal,
     _nmea_checksum,
-    parse_nmea_file,
     haversine_km,
 )
-from src.ingestion import (
-    load_station_data,
-    discover_station_files,
-)
 from src.maintenance import parse_maintenance_log
+from src.temporal import prepare_observations
 
 
 # ── Fixtures ────────────────────────────────────────────────────────────────
@@ -186,12 +172,10 @@ class TestDataCompleteness:
 
     def test_duplicate_timestamps(self, cfg):
         df = _make_df(n=20)
-        df["dup_ts"] = False
-        df.loc[5, "dup_ts"] = True
-        df.loc[6, "dup_ts"] = True
-        flags = check_completeness(df, cfg)
-        dup_flags = [f for f in flags if "uplicate" in f["issue"]]
-        assert len(dup_flags) >= 1
+        replay = pd.concat([df, df.iloc[5:7]], ignore_index=True)
+        prepared, flags = prepare_observations(replay, [], cfg)
+        assert len(prepared) == len(df)
+        assert any(f["issue"] == "Exact observation replay" for f in flags)
 
 
 class TestCrossChannel:
@@ -335,12 +319,6 @@ class TestSecurity:
     def test_normal_text_unchanged(self):
         assert _sanitise_cell("Temperature flatline") == "Temperature flatline"
         assert _sanitise_cell("S01") == "S01"
-
-    def test_source_file_protection(self):
-        """Verify the checker refuses to overwrite source data files."""
-        # This is tested implicitly by checker.py logic
-        pass
-
 
 # ══════════════════════════════════════════════════════════════════════════════
 #  EDGE CASE TESTS
