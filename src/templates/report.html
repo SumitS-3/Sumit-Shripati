@@ -1,0 +1,102 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>$title — Network health</title>
+<style>
+@page { size: A4; margin: 12mm; }
+:root { color-scheme: light; --ink: #243a36; --muted: #596964; --paper: #fffef9; --line: #d6ded5; --teal: #15645a; --amber: #774619; }
+* { box-sizing: border-box; }
+body { margin: 0; background: #e9ede7; color: var(--ink); font: 13px/1.38 "Segoe UI", Arial, sans-serif; }
+main { max-width: 1000px; margin: 28px auto; padding: 32px 36px 26px; background: var(--paper); border-top: 7px solid var(--teal); }
+.masthead, .section-head, footer { display: flex; justify-content: space-between; gap: 16px; align-items: baseline; }
+.network { font-size: 11px; font-weight: 750; letter-spacing: .11em; text-transform: uppercase; }
+.window, .period, .eyebrow, footer { color: var(--muted); font-size: 11px; }
+.window { white-space: nowrap; }
+h1 { font-family: Georgia, "Times New Roman", serif; font-weight: normal; font-size: 36px; line-height: 1.1; letter-spacing: -.025em; margin: 22px 0 8px; }
+.period { margin: 0; }
+.decision { margin: 16px 0 23px; padding: 10px 13px; border-left: 4px solid var(--teal); background: #edf3eb; font-size: 15px; font-weight: 650; }
+.section-head { margin: 0 0 7px; border-bottom: 1px solid var(--ink); padding-bottom: 6px; }
+h2 { font-size: 14px; margin: 0; font-weight: 750; }
+.section-number { color: var(--teal); margin-right: 7px; }
+.eyebrow { font-weight: 500; }
+.overview-note { font-size: 12px; margin: 6px 0 10px; }
+table { width: 100%; border-collapse: collapse; table-layout: fixed; }
+col.station { width: 19%; } col.percent { width: 6.3%; } col.action { width: 36.9%; }
+thead th { text-align: center; font-size: 10px; font-weight: 650; color: var(--muted); padding: 7px 2px; border-bottom: 1px solid var(--line); }
+thead th:first-child, thead th:last-child { text-align: left; }
+tbody th, tbody td { border-bottom: 1px solid var(--line); padding: 9px 3px; vertical-align: top; }
+tbody th { text-align: left; font-size: 12px; font-weight: normal; }
+tbody th b { font-size: 12px; }
+.site-name { display: block; color: var(--muted); font-size: 10.5px; line-height: 1.3; margin-top: 2px; overflow-wrap: anywhere; }
+.coverage { font-variant-numeric: tabular-nums; text-align: center; font-size: 11px; font-weight: 650; padding-top: 11px; }
+.complete { color: var(--teal); } .restricted { color: var(--amber); background: #faf0df; } .unassessed { color: var(--muted); }
+.treatment { padding-left: 10px; font-size: 11px; line-height: 1.4; }
+.station-badge { margin-left: 5px; font-size: 8px; text-transform: uppercase; letter-spacing: .03em; color: var(--amber); border: 1px solid #c9b18f; padding: 1px 3px; white-space: nowrap; }
+.legend { margin: 8px 0 22px; font-size: 10px; color: var(--muted); }
+.visit-grid { display: grid; grid-template-columns: 1.6fr 1fr; gap: 23px; }
+h3 { font-size: 18px; margin: 9px 0 7px; line-height: 1.2; }
+h3 span { font-size: 13px; font-weight: 500; }
+.visit-reason, .first-check { margin: 7px 0; }
+.first-check { background: #edf3eb; padding: 8px 10px; }
+.first-check b { display: block; font-size: 10px; text-transform: uppercase; letter-spacing: .05em; margin-bottom: 2px; }
+.visit-steps { list-style: none; padding: 0; margin: 10px 0; }
+.visit-steps li { margin: 0 0 6px; }
+.bring { font-size: 11px; color: var(--muted); margin: 8px 0 0; }
+aside { border-left: 1px solid var(--line); padding-left: 18px; font-size: 12px; }
+aside h3 { font-size: 15px; } aside p { margin: 8px 0; }
+.confirm { margin-top: 16px; }
+.cautions { margin-top: 20px; border-top: 1px solid var(--ink); padding-top: 9px; }
+.cautions h2 { font-size: 12px; }
+.cautions ul { padding-left: 16px; margin: 7px 0; font-size: 11px; color: var(--muted); }
+.cautions li { margin: 3px 0; }
+footer { margin-top: 14px; padding-top: 8px; border-top: 1px solid var(--line); font-size: 9px; }
+@media (max-width: 700px) { main { margin: 0; padding: 20px 12px; } h1 { font-size: 30px; } .masthead { display: block; } .visit-grid { display: block; } aside { border-left: 0; border-top: 1px solid var(--line); padding: 10px 0; margin-top: 15px; } }
+@media print {
+ body { background: white; font-size: 8.5pt; line-height: 1.32; -webkit-print-color-adjust: exact; print-color-adjust: exact; }
+ main { max-width: none; margin: 0; padding: 0; border-top-width: 1.5mm; }
+ h1 { font-size: 23pt; margin-top: 11px; } .network, .window, .period { font-size: 7.3pt; }
+ .decision { font-size: 10pt; margin: 8px 0 12px; padding: 7px 10px; }
+ h2 { font-size: 9.5pt; } .eyebrow { font-size: 7pt; } .overview-note { font-size: 8pt; margin-bottom: 7px; }
+ thead th { font-size: 7pt; padding: 5px 2px; } tbody th, tbody td { padding-top: 5px; padding-bottom: 5px; }
+ tbody th b { font-size: 8pt; } .site-name { font-size: 7pt; } .coverage { font-size: 8pt; padding-top: 7px; }
+ .treatment { font-size: 8pt; line-height: 1.3; padding-left: 7px; } .station-badge { font-size: 5.5pt; }
+ .legend { font-size: 7pt; margin-bottom: 10px; } h3 { font-size: 13pt; } h3 span { font-size: 8.5pt; }
+ .visit-grid { gap: 16px; } .first-check { padding: 6px 8px; } .first-check b { font-size: 7pt; }
+ .visit-steps { margin: 8px 0; } .visit-steps li { margin-bottom: 5px; } .bring { font-size: 7pt; }
+ aside { font-size: 8pt; padding-left: 13px; } aside h3 { font-size: 10pt; }
+ .cautions { margin-top: 13px; padding-top: 7px; } .cautions h2 { font-size: 8pt; } .cautions ul { font-size: 7.2pt; }
+ footer { font-size: 6.5pt; margin-top: 9px; padding-top: 6px; }
+ tr, .first-check, .cautions { break-inside: avoid; } h2, h3, .section-head { break-after: avoid; }
+ thead { display: table-header-group; }
+}
+</style>
+</head>
+<body>
+<main>
+ <header>
+  <div class="masthead"><div class="network">$title</div><div class="window">$window</div></div>
+  <h1>Data for the summary.<br>One visit for next week.</h1>
+  <p class="period">$period</p>
+  <p class="decision">$decision</p>
+ </header>
+ <section aria-labelledby="data-title">
+  <div class="section-head"><h2 id="data-title"><span class="section-number">01</span>What can go into the summary?</h2><span class="eyebrow">Usable share · % of expected intervals</span></div>
+  <p class="overview-note">$overview_note</p>
+  <table aria-label="Station coverage and required treatments">
+   <colgroup><col class="station"><col class="percent" span="7"><col class="action"></colgroup>
+   <thead><tr><th scope="col">Station</th><th scope="col">Temp</th><th scope="col">RH</th><th scope="col">Press</th><th scope="col">Wind</th><th scope="col">Dir</th><th scope="col">Rain</th><th scope="col">Sun</th><th scope="col">Treatment before inclusion</th></tr></thead>
+   <tbody>$station_rows</tbody>
+  </table>
+  <p class="legend">RH = humidity; Dir = wind direction; Sun = sunlight. Missing intervals stay in the denominator; overlap counts once. Percentages assume listed clock/replay fixes; original files are unchanged. Exact UTC windows: <b>flags.csv</b>.</p>
+ </section>
+ <section aria-labelledby="visit-title">
+  <div class="section-head"><h2 id="visit-title"><span class="section-number">02</span>Where should the technician spend one hour?</h2><span class="eyebrow">Unresolved faults first</span></div>
+  <div class="visit-grid"><div>$visit</div><aside>$comparison</aside></div>
+ </section>
+ <section class="cautions" aria-labelledby="cautions-title"><h2 id="cautions-title">Keep these qualifications with the decision</h2><ul>$cautions</ul></section>
+ <footer><span>$flag_count evidence flags · generated $generated</span><span>Supplied weather data: ERA5 / Copernicus, CC BY 4.0</span></footer>
+</main>
+</body>
+</html>

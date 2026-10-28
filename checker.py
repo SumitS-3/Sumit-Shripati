@@ -273,15 +273,18 @@ def main(argv: List[str] | None = None) -> int:
         return 1
 
     # ── Generate network health report ────────────────────────────────────
+    n_processed = len(station_data)
     try:
         flags_for_report = out_df.to_dict("records")
-        summaries = compute_station_summaries(station_data, out_df, stations_meta)
+        summaries = compute_station_summaries(station_data, out_df, stations_meta, station_configs)
+        # Report generation needs compact summaries, not the network's raw frames.
+        station_data.clear()
         tech_station, runner_up = recommend_technician_visit(summaries)
         logger.info(
             "Technician recommendation: %s (runner-up: %s)",
             tech_station, runner_up
         )
-        generate_html_report(summaries, flags_for_report, tech_station, runner_up, report_path)
+        generate_html_report(summaries, flags_for_report, tech_station, runner_up, report_path, cfg.report_title)
     except Exception as exc:
         logger.error("Report generation failed: %s", exc, exc_info=True)
         # flags.csv remains available, but the run did not produce every deliverable.
@@ -291,10 +294,10 @@ def main(argv: List[str] | None = None) -> int:
     elapsed = time.perf_counter() - t_start
     logger.info(
         "Done in %.1f s: %d stations processed, %d failed, %d flags written.",
-        elapsed, len(station_data), n_failed, len(all_flag_rows),
+        elapsed, n_processed, n_failed, len(all_flag_rows),
     )
 
-    if n_failed > 0 and len(station_data) == 0:
+    if n_failed > 0 and n_processed == 0:
         return 1
     if n_failed > 0:
         return 2

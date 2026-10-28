@@ -21,6 +21,7 @@ import pandas as pd
 from .config import CheckerConfig
 from .maintenance import MaintenanceEvent, find_nearby_events
 from .schema import FLAG_COLUMNS, TS_FMT
+from .output import atomic_text
 
 logger = logging.getLogger(__name__)
 
@@ -195,8 +196,6 @@ def write_flags_csv(all_rows: List[Dict], output_path: str) -> None:
     Raises on failure rather than producing a partial file.
     """
     import csv
-    import os
-    import tempfile
 
     # Validate all rows have required columns
     for i, row in enumerate(all_rows):
@@ -209,19 +208,8 @@ def write_flags_csv(all_rows: List[Dict], output_path: str) -> None:
         r["station_id"], r["start_utc"] or "", r["channel"]
     ))
 
-    # Protect source files: refuse to overwrite any input file
-    output_path = os.path.abspath(output_path)
-    tmp_fd, tmp_path = tempfile.mkstemp(suffix=".csv.tmp", dir=os.path.dirname(output_path))
-    try:
-        with os.fdopen(tmp_fd, "w", newline="", encoding="utf-8") as f:
-            writer = csv.DictWriter(f, fieldnames=FLAG_COLUMNS, extrasaction="ignore")
-            writer.writeheader()
-            writer.writerows(all_rows_sorted)
-        os.replace(tmp_path, output_path)
-        logger.info("Wrote %d flags to %s", len(all_rows_sorted), output_path)
-    except Exception:
-        try:
-            os.unlink(tmp_path)
-        except OSError:
-            pass
-        raise
+    with atomic_text(output_path) as stream:
+        writer = csv.DictWriter(stream, fieldnames=FLAG_COLUMNS, extrasaction="ignore")
+        writer.writeheader()
+        writer.writerows(all_rows_sorted)
+    logger.info("Wrote %d flags to %s", len(all_rows_sorted), output_path)

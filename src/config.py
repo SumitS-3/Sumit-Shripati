@@ -101,7 +101,7 @@ class CheckerConfig:
     merge_gap_min: int = 10
 
     # Report
-    report_title: str = "Ridgeline Schools Weather Network — Health Report"
+    report_title: str = "Ridgeline Schools Weather Network"
 
     # Physical bounds (can be overridden per deployment)
     physical_bounds: Dict[str, Dict[str, float]] = field(

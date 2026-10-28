@@ -109,6 +109,7 @@ def prepare_observations(frame: pd.DataFrame, samples: list[ClockSample],
                          cfg: CheckerConfig) -> tuple[pd.DataFrame, list[dict]]:
     """Return sorted, unique observations and auditable flags for every time treatment."""
     frame = frame.copy().reset_index(drop=True)
+    source_records = len(frame)
     if "source_row" not in frame:
         frame["source_row"] = frame.index + 2
     frame["logger_timestamp_utc"] = frame.timestamp_utc
@@ -124,12 +125,16 @@ def prepare_observations(frame: pd.DataFrame, samples: list[ClockSample],
             "action": "exclude",
             "note": f"Withhold this station's timed observations pending review because {exc}; no timestamp correction was applied.",
         })
-        return frame.iloc[:0], flags
+        withheld = frame.iloc[:0].copy()
+        withheld.attrs.update(source_records=source_records, temporal_unresolved=True,
+                              source_start=frame.timestamp_utc.min(), source_end=frame.timestamp_utc.max())
+        return withheld, flags
     flags.extend(clock_flags)
     frame["timestamp_utc"] += pd.to_timedelta(offsets, unit="s")
     # A rollback can legitimately produce identical values at two different true
     # times, so replay removal must follow any independently supported clock repair.
     repeated = frame.duplicated(["timestamp_utc", *channels], keep="first")
+    replayed_records = int(repeated.sum())
     flags.extend(_incident_flags(
         frame.loc[repeated], cfg, "Exact observation replay", "correct",
         lambda count, times:
@@ -139,6 +144,7 @@ def prepare_observations(frame: pd.DataFrame, samples: list[ClockSample],
     frame = frame.sort_values("timestamp_utc", kind="stable").reset_index(drop=True)
 
     conflicts = frame.duplicated("timestamp_utc", keep=False)
+    conflicting_records = int(conflicts.sum())
     flags.extend(_incident_flags(
         frame.loc[conflicts], cfg, "Conflicting duplicate timestamps", "exclude",
         lambda count, times:
@@ -146,4 +152,9 @@ def prepare_observations(frame: pd.DataFrame, samples: list[ClockSample],
     ))
     frame = frame.loc[~conflicts].reset_index(drop=True)
     frame["dup_ts"] = False
+    frame.attrs.update(source_records=source_records, replayed_records=replayed_records,
+                       conflicting_records=conflicting_records, clock_corrected_records=int((offsets != 0).sum()),
+                       treatments_applied=tuple(kind for kind, count in (
+                           ("clock", int((offsets != 0).sum())), ("replay", replayed_records)
+                       ) if count))
     return frame, flags

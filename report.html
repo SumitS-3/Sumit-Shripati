@@ -1,325 +1,102 @@
-<!DOCTYPE html>
+<!doctype html>
 <html lang="en">
 <head>
-<meta charset="UTF-8">
-<title>Ridgeline Schools Weather Network — Health Report</title>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Ridgeline Schools Weather Network — Network health</title>
 <style>
-  @page { size: A4; margin: 18mm 18mm 18mm 18mm; }
-  body { font-family: Arial, Helvetica, sans-serif; font-size: 10pt; color: #222;
-          max-width: 190mm; margin: auto; line-height: 1.4; }
-  h1 { font-size: 14pt; border-bottom: 2px solid #333; padding-bottom: 4px; }
-  h2 { font-size: 11pt; border-bottom: 1px solid #aaa; margin-top: 14px; padding-bottom: 2px; }
-  h3 { font-size: 10pt; margin-top: 10px; }
-  table { border-collapse: collapse; width: 100%; font-size: 9pt; margin-bottom: 8px; }
-  th { background: #eee; border: 1px solid #ccc; padding: 3px 6px; text-align: left; }
-  td { border: 1px solid #ddd; padding: 3px 6px; vertical-align: top; }
-  .summary-box { background: #f0f4ff; border: 1px solid #b0c0e0;
-                  padding: 6px 12px; margin-bottom: 10px; }
-  ul, ol { margin-top: 4px; }
-  li { margin-bottom: 3px; }
-  .footer { font-size: 8pt; color: #888; border-top: 1px solid #ccc;
-             margin-top: 16px; padding-top: 4px; }
-  @media print {
-    .no-print { display: none; }
-    body { font-size: 9pt; }
-  }
+@page { size: A4; margin: 12mm; }
+:root { color-scheme: light; --ink: #243a36; --muted: #596964; --paper: #fffef9; --line: #d6ded5; --teal: #15645a; --amber: #774619; }
+* { box-sizing: border-box; }
+body { margin: 0; background: #e9ede7; color: var(--ink); font: 13px/1.38 "Segoe UI", Arial, sans-serif; }
+main { max-width: 1000px; margin: 28px auto; padding: 32px 36px 26px; background: var(--paper); border-top: 7px solid var(--teal); }
+.masthead, .section-head, footer { display: flex; justify-content: space-between; gap: 16px; align-items: baseline; }
+.network { font-size: 11px; font-weight: 750; letter-spacing: .11em; text-transform: uppercase; }
+.window, .period, .eyebrow, footer { color: var(--muted); font-size: 11px; }
+.window { white-space: nowrap; }
+h1 { font-family: Georgia, "Times New Roman", serif; font-weight: normal; font-size: 36px; line-height: 1.1; letter-spacing: -.025em; margin: 22px 0 8px; }
+.period { margin: 0; }
+.decision { margin: 16px 0 23px; padding: 10px 13px; border-left: 4px solid var(--teal); background: #edf3eb; font-size: 15px; font-weight: 650; }
+.section-head { margin: 0 0 7px; border-bottom: 1px solid var(--ink); padding-bottom: 6px; }
+h2 { font-size: 14px; margin: 0; font-weight: 750; }
+.section-number { color: var(--teal); margin-right: 7px; }
+.eyebrow { font-weight: 500; }
+.overview-note { font-size: 12px; margin: 6px 0 10px; }
+table { width: 100%; border-collapse: collapse; table-layout: fixed; }
+col.station { width: 19%; } col.percent { width: 6.3%; } col.action { width: 36.9%; }
+thead th { text-align: center; font-size: 10px; font-weight: 650; color: var(--muted); padding: 7px 2px; border-bottom: 1px solid var(--line); }
+thead th:first-child, thead th:last-child { text-align: left; }
+tbody th, tbody td { border-bottom: 1px solid var(--line); padding: 9px 3px; vertical-align: top; }
+tbody th { text-align: left; font-size: 12px; font-weight: normal; }
+tbody th b { font-size: 12px; }
+.site-name { display: block; color: var(--muted); font-size: 10.5px; line-height: 1.3; margin-top: 2px; overflow-wrap: anywhere; }
+.coverage { font-variant-numeric: tabular-nums; text-align: center; font-size: 11px; font-weight: 650; padding-top: 11px; }
+.complete { color: var(--teal); } .restricted { color: var(--amber); background: #faf0df; } .unassessed { color: var(--muted); }
+.treatment { padding-left: 10px; font-size: 11px; line-height: 1.4; }
+.station-badge { margin-left: 5px; font-size: 8px; text-transform: uppercase; letter-spacing: .03em; color: var(--amber); border: 1px solid #c9b18f; padding: 1px 3px; white-space: nowrap; }
+.legend { margin: 8px 0 22px; font-size: 10px; color: var(--muted); }
+.visit-grid { display: grid; grid-template-columns: 1.6fr 1fr; gap: 23px; }
+h3 { font-size: 18px; margin: 9px 0 7px; line-height: 1.2; }
+h3 span { font-size: 13px; font-weight: 500; }
+.visit-reason, .first-check { margin: 7px 0; }
+.first-check { background: #edf3eb; padding: 8px 10px; }
+.first-check b { display: block; font-size: 10px; text-transform: uppercase; letter-spacing: .05em; margin-bottom: 2px; }
+.visit-steps { list-style: none; padding: 0; margin: 10px 0; }
+.visit-steps li { margin: 0 0 6px; }
+.bring { font-size: 11px; color: var(--muted); margin: 8px 0 0; }
+aside { border-left: 1px solid var(--line); padding-left: 18px; font-size: 12px; }
+aside h3 { font-size: 15px; } aside p { margin: 8px 0; }
+.confirm { margin-top: 16px; }
+.cautions { margin-top: 20px; border-top: 1px solid var(--ink); padding-top: 9px; }
+.cautions h2 { font-size: 12px; }
+.cautions ul { padding-left: 16px; margin: 7px 0; font-size: 11px; color: var(--muted); }
+.cautions li { margin: 3px 0; }
+footer { margin-top: 14px; padding-top: 8px; border-top: 1px solid var(--line); font-size: 9px; }
+@media (max-width: 700px) { main { margin: 0; padding: 20px 12px; } h1 { font-size: 30px; } .masthead { display: block; } .visit-grid { display: block; } aside { border-left: 0; border-top: 1px solid var(--line); padding: 10px 0; margin-top: 15px; } }
+@media print {
+ body { background: white; font-size: 8.5pt; line-height: 1.32; -webkit-print-color-adjust: exact; print-color-adjust: exact; }
+ main { max-width: none; margin: 0; padding: 0; border-top-width: 1.5mm; }
+ h1 { font-size: 23pt; margin-top: 11px; } .network, .window, .period { font-size: 7.3pt; }
+ .decision { font-size: 10pt; margin: 8px 0 12px; padding: 7px 10px; }
+ h2 { font-size: 9.5pt; } .eyebrow { font-size: 7pt; } .overview-note { font-size: 8pt; margin-bottom: 7px; }
+ thead th { font-size: 7pt; padding: 5px 2px; } tbody th, tbody td { padding-top: 5px; padding-bottom: 5px; }
+ tbody th b { font-size: 8pt; } .site-name { font-size: 7pt; } .coverage { font-size: 8pt; padding-top: 7px; }
+ .treatment { font-size: 8pt; line-height: 1.3; padding-left: 7px; } .station-badge { font-size: 5.5pt; }
+ .legend { font-size: 7pt; margin-bottom: 10px; } h3 { font-size: 13pt; } h3 span { font-size: 8.5pt; }
+ .visit-grid { gap: 16px; } .first-check { padding: 6px 8px; } .first-check b { font-size: 7pt; }
+ .visit-steps { margin: 8px 0; } .visit-steps li { margin-bottom: 5px; } .bring { font-size: 7pt; }
+ aside { font-size: 8pt; padding-left: 13px; } aside h3 { font-size: 10pt; }
+ .cautions { margin-top: 13px; padding-top: 7px; } .cautions h2 { font-size: 8pt; } .cautions ul { font-size: 7.2pt; }
+ footer { font-size: 6.5pt; margin-top: 9px; padding-top: 6px; }
+ tr, .first-check, .cautions { break-inside: avoid; } h2, h3, .section-head { break-after: avoid; }
+ thead { display: table-header-group; }
+}
 </style>
 </head>
 <body>
-<h1>Ridgeline Schools Weather Network — Health Report</h1>
-<p style="color:#555; font-size:9pt">Generated: 2026-10-28 14:43 UTC &nbsp;|&nbsp;
-Observation period: 2025-03-01 to 2025-04-11 &nbsp;|&nbsp;
-8 stations checked</p>
-
-<div class="summary-box">
-<strong>Summary:</strong>
-85 data-quality flags raised across 8 stations —
-45 exclusion(s), 23 correction(s), 17 kept-for-awareness.
-All figures are derived from automated analysis of the supplied data files.
-</div>
-
-<h2>1. Network Health Overview</h2>
-<table>
-  <tr>
-    <th>ID</th><th>Station Name</th><th>Records</th>
-    <th>Status</th><th>Climate Summary</th><th>Exclusion flags</th>
-  </tr>
-  
-        <tr>
-          <td><strong>S01</strong></td>
-          <td>Saddle Ridge Hut</td>
-          <td style="text-align:center">6,048</td>
-          <td style="text-align:center"><span style="color:#1a7a1a; font-weight:bold">Good</span></td>
-          <td><span style="color:#1a7a1a;font-weight:bold">Include</span></td>
-          <td style="text-align:center">0</td>
-        </tr>
-        <tr>
-          <td><strong>S02</strong></td>
-          <td>North Mesa School</td>
-          <td style="text-align:center">6,048</td>
-          <td style="text-align:center"><span style="color:#1a7a1a; font-weight:bold">Good</span></td>
-          <td><span style="color:#1a7a1a;font-weight:bold">Include</span></td>
-          <td style="text-align:center">0</td>
-        </tr>
-        <tr>
-          <td><strong>S03</strong></td>
-          <td>Valley Library</td>
-          <td style="text-align:center">6,048</td>
-          <td style="text-align:center"><span style="color:#7a5c00; font-weight:bold">Usable (with caveats)</span></td>
-          <td><span style="color:#7a5c00;font-weight:bold">Include with corrections noted</span></td>
-          <td style="text-align:center">3</td>
-        </tr>
-        <tr>
-          <td><strong>S04</strong></td>
-          <td>Foothills Community Garden</td>
-          <td style="text-align:center">6,048</td>
-          <td style="text-align:center"><span style="color:#1a7a1a; font-weight:bold">Good</span></td>
-          <td><span style="color:#1a7a1a;font-weight:bold">Include</span></td>
-          <td style="text-align:center">0</td>
-        </tr>
-        <tr>
-          <td><strong>S05</strong></td>
-          <td>Eastside Rec Centre</td>
-          <td style="text-align:center">6,048</td>
-          <td style="text-align:center"><span style="color:#1a7a1a; font-weight:bold">Good</span></td>
-          <td><span style="color:#1a7a1a;font-weight:bold">Include</span></td>
-          <td style="text-align:center">5</td>
-        </tr>
-        <tr>
-          <td><strong>S06</strong></td>
-          <td>South Hills Fire Station</td>
-          <td style="text-align:center">6,048</td>
-          <td style="text-align:center"><span style="color:#7a5c00; font-weight:bold">Usable (with caveats)</span></td>
-          <td><span style="color:#7a5c00;font-weight:bold">Include with corrections noted</span></td>
-          <td style="text-align:center">36</td>
-        </tr>
-        <tr>
-          <td><strong>S07</strong></td>
-          <td>Riverbend Farm</td>
-          <td style="text-align:center">6,048</td>
-          <td style="text-align:center"><span style="color:#1a7a1a; font-weight:bold">Good</span></td>
-          <td><span style="color:#1a7a1a;font-weight:bold">Include</span></td>
-          <td style="text-align:center">0</td>
-        </tr>
-        <tr>
-          <td><strong>S08</strong></td>
-          <td>Plains Grange Hall</td>
-          <td style="text-align:center">5,978</td>
-          <td style="text-align:center"><span style="color:#1a7a1a; font-weight:bold">Good</span></td>
-          <td><span style="color:#1a7a1a;font-weight:bold">Include</span></td>
-          <td style="text-align:center">1</td>
-        </tr>
-</table>
-
-<h2>2. Climate Summary Data Suitability</h2>
-<p>The table above shows each station's recommended treatment.
-Stations rated <strong>Good</strong> may be included directly.
-Stations rated <strong>Usable (with caveats)</strong> or <strong>Partial</strong>
-should be included only after applying the documented corrections and excluding
-flagged intervals. A station rated <strong>Unreliable</strong> should be excluded
-from the climate summary or reviewed manually before use.</p>
-<p>Note: a "Partial" or "Usable" rating does not mean the station is broken — it means
-one or more channels had a short failure or require a documented correction. Other channels
-from the same station may be fully usable.</p>
-
-<h2>3. Important Data-Quality Problems</h2>
-<table>
-  <tr>
-    <th>Station</th><th>Channel</th><th>From</th><th>To</th><th>Issue</th><th>Action</th>
-  </tr>
-  
-        <tr>
-          <td><strong>S03</strong></td>
-          <td>temp_c</td>
-          <td>2025-03-12 03:40</td>
-          <td>2025-03-12 03:40</td>
-          <td>Out-of-range temp_c: [85.00, 85.00]</td>
-          <td><span style="background:#ffd0d0;color:#900;padding:1px 5px;border-radius:3px">exclude</span></td>
-        </tr>
-        <tr>
-          <td><strong>S03</strong></td>
-          <td>temp_c</td>
-          <td>2025-03-18 06:00</td>
-          <td>2025-03-21 14:00</td>
-          <td>Flatline: temp_c = 6.5 for 80.2 h (481 records)</td>
-          <td><span style="background:#ffd0d0;color:#900;padding:1px 5px;border-radius:3px">exclude</span></td>
-        </tr>
-        <tr>
-          <td><strong>S03</strong></td>
-          <td>temp_c</td>
-          <td>2025-04-08 09:50</td>
-          <td>2025-04-08 09:50</td>
-          <td>Out-of-range temp_c: [85.00, 85.00]</td>
-          <td><span style="background:#ffd0d0;color:#900;padding:1px 5px;border-radius:3px">exclude</span></td>
-        </tr>
-        <tr>
-          <td><strong>S05</strong></td>
-          <td>rh_pct</td>
-          <td>2025-03-07 16:50</td>
-          <td>2025-03-07 23:00</td>
-          <td>RH at saturation with GHI &gt; 200 W/m2 for 2.2 h -- sensor blockage suspected</td>
-          <td><span style="background:#ffd0d0;color:#900;padding:1px 5px;border-radius:3px">exclude</span></td>
-        </tr>
-        <tr>
-          <td><strong>S05</strong></td>
-          <td>rh_pct</td>
-          <td>2025-03-08 14:50</td>
-          <td>2025-03-08 23:40</td>
-          <td>RH at saturation with GHI &gt; 200 W/m2 for 9.0 h -- sensor blockage suspected</td>
-          <td><span style="background:#ffd0d0;color:#900;padding:1px 5px;border-radius:3px">exclude</span></td>
-        </tr>
-        <tr>
-          <td><strong>S05</strong></td>
-          <td>rh_pct</td>
-          <td>2025-03-09 14:50</td>
-          <td>2025-03-09 23:30</td>
-          <td>RH at saturation with GHI &gt; 200 W/m2 for 8.8 h -- sensor blockage suspected</td>
-          <td><span style="background:#ffd0d0;color:#900;padding:1px 5px;border-radius:3px">exclude</span></td>
-        </tr>
-        <tr>
-          <td><strong>S05</strong></td>
-          <td>rh_pct</td>
-          <td>2025-03-10 14:50</td>
-          <td>2025-03-10 23:50</td>
-          <td>RH at saturation with GHI &gt; 200 W/m2 for 9.2 h -- sensor blockage suspected</td>
-          <td><span style="background:#ffd0d0;color:#900;padding:1px 5px;border-radius:3px">exclude</span></td>
-        </tr>
-        <tr>
-          <td><strong>S05</strong></td>
-          <td>rh_pct</td>
-          <td>2025-03-10 17:20</td>
-          <td>2025-03-10 20:40</td>
-          <td>Flatline: rh_pct = 104.0 for 3.5 h (21 records)</td>
-          <td><span style="background:#ffd0d0;color:#900;padding:1px 5px;border-radius:3px">exclude</span></td>
-        </tr>
-        <tr>
-          <td><strong>S06</strong></td>
-          <td>ghi_wm2</td>
-          <td>2025-03-24 20:20</td>
-          <td>2025-03-24 23:50</td>
-          <td>Flatline: ghi_wm2 = 0 for 3.7 h (22 records)</td>
-          <td><span style="background:#ffd0d0;color:#900;padding:1px 5px;border-radius:3px">exclude</span></td>
-        </tr>
-        <tr>
-          <td><strong>S06</strong></td>
-          <td>ghi_wm2</td>
-          <td>2025-03-25 08:20</td>
-          <td>2025-03-25 12:50</td>
-          <td>GHI 871 W/m2 during expected nighttime (28 records)</td>
-          <td><span style="background:#ffd0d0;color:#900;padding:1px 5px;border-radius:3px">exclude</span></td>
-        </tr>
-        <tr>
-          <td><strong>S06</strong></td>
-          <td>ghi_wm2</td>
-          <td>2025-03-25 20:20</td>
-          <td>2025-03-25 23:50</td>
-          <td>Flatline: ghi_wm2 = 0 for 3.7 h (22 records)</td>
-          <td><span style="background:#ffd0d0;color:#900;padding:1px 5px;border-radius:3px">exclude</span></td>
-        </tr>
-        <tr>
-          <td><strong>S06</strong></td>
-          <td>ghi_wm2</td>
-          <td>2025-03-26 08:10</td>
-          <td>2025-03-26 12:50</td>
-          <td>GHI 887 W/m2 during expected nighttime (29 records)</td>
-          <td><span style="background:#ffd0d0;color:#900;padding:1px 5px;border-radius:3px">exclude</span></td>
-        </tr>
-        <tr>
-          <td><strong>S02</strong></td>
-          <td>pressure_hpa</td>
-          <td>2025-03-21 17:20</td>
-          <td>2025-03-21 17:20</td>
-          <td>Pressure step 836.0 to 842.5 hPa (6.5 hPa in 10 min)</td>
-          <td><span style="background:#fff0cc;color:#660;padding:1px 5px;border-radius:3px">correct</span></td>
-        </tr>
-        <tr>
-          <td><strong>S05</strong></td>
-          <td>rh_pct</td>
-          <td>2025-03-08 01:30</td>
-          <td>2025-03-08 01:30</td>
-          <td>RH above 101 %: max 102 % (1 records)</td>
-          <td><span style="background:#fff0cc;color:#660;padding:1px 5px;border-radius:3px">correct</span></td>
-        </tr>
-        <tr>
-          <td><strong>S05</strong></td>
-          <td>rh_pct</td>
-          <td>2025-03-08 02:10</td>
-          <td>2025-03-08 02:10</td>
-          <td>RH above 101 %: max 102 % (1 records)</td>
-          <td><span style="background:#fff0cc;color:#660;padding:1px 5px;border-radius:3px">correct</span></td>
-        </tr>
-        <tr>
-          <td><strong>S05</strong></td>
-          <td>rh_pct</td>
-          <td>2025-03-08 07:50</td>
-          <td>2025-03-08 07:50</td>
-          <td>RH above 101 %: max 102 % (1 records)</td>
-          <td><span style="background:#fff0cc;color:#660;padding:1px 5px;border-radius:3px">correct</span></td>
-        </tr>
-        <tr>
-          <td><strong>S05</strong></td>
-          <td>rh_pct</td>
-          <td>2025-03-08 10:20</td>
-          <td>2025-03-08 11:00</td>
-          <td>RH above 101 %: max 102 % (1 records)</td>
-          <td><span style="background:#fff0cc;color:#660;padding:1px 5px;border-radius:3px">correct</span></td>
-        </tr>
-        <tr>
-          <td><strong>S05</strong></td>
-          <td>rh_pct</td>
-          <td>2025-03-08 12:10</td>
-          <td>2025-03-08 12:10</td>
-          <td>RH above 101 %: max 102 % (1 records)</td>
-          <td><span style="background:#fff0cc;color:#660;padding:1px 5px;border-radius:3px">correct</span></td>
-        </tr>
-</table>
-<p style="font-size:9pt; color:#555">
-(Showing top 18 flags by severity. Full list in flags.csv.)
-</p>
-
-
-    <h2>4. Recommended Technician Visit</h2>
-    <p>Based on flag analysis, the coordinator should send the technician to:</p>
-    <p style="font-size:1.3em;background:#fff0cc;padding:8px 14px;border-left:4px solid #c90">
-      <strong>S06: South Hills Fire Station</strong>
-    </p>
-    <p><strong>Why this station?</strong> It has 36 exclusion flag(s) and
-    11 correction flag(s). The problems identified suggest on-site hardware
-    inspection can resolve the root cause.</p>
-    <p><strong>Key issues to address:</strong></p>
-    <ul><li>Flatline: ghi_wm2 = 0 for 3.7 h (22 records)<br><small style='color:#555'>ghi_wm2 unchanged at 0 for 3.7 h (2025-03-24 20:20 to 2025-03-24 23:50); indicates logger freeze, sensor failure, or stu…</small></li><li>GHI 871 W/m2 during expected nighttime (28 records)<br><small style='color:#555'>GHI up to 871 W/m2 recorded 08:20-12:50 UTC, corresponding to local nighttime; sensor offset or radiation-shield obstruc…</small></li><li>Flatline: ghi_wm2 = 0 for 3.7 h (22 records)<br><small style='color:#555'>ghi_wm2 unchanged at 0 for 3.7 h (2025-03-25 20:20 to 2025-03-25 23:50); indicates logger freeze, sensor failure, or stu…</small></li><li>GHI 887 W/m2 during expected nighttime (29 records)<br><small style='color:#555'>GHI up to 887 W/m2 recorded 08:10-12:50 UTC, corresponding to local nighttime; sensor offset or radiation-shield obstruc…</small></li><li>Flatline: ghi_wm2 = 0 for 3.7 h (22 records)<br><small style='color:#555'>ghi_wm2 unchanged at 0 for 3.7 h (2025-03-26 20:20 to 2025-03-26 23:50); indicates logger freeze, sensor failure, or stu…</small></li></ul>
-    <h3>5. Suggested First Inspection Steps (within 60 minutes)</h3>
-    <ol>
-      <li>Check the radiation shield (temperature sensor housing) for obstructions, spider webs, or paint damage.</li>
-      <li>Inspect the rain gauge funnel and tipping bucket for blockage.</li>
-      <li>Verify the humidity sensor probe is clean and unobstructed.</li>
-      <li>Review the logger display for error codes and check the clock against GPS time.</li>
-      <li>Record the logger's current readings and compare with a reference thermometer.</li>
-      <li>Photograph the installation before and after any intervention.</li>
-    </ol>
-    <p>The second-best candidate is <strong>S05 (Eastside Rec Centre)</strong>, with 5 exclusion flag(s). It is ranked lower because its issues appear less likely to be resolved by on-site intervention.</p>
-
-
-<h2>6. Limitations and Uncertainties</h2>
-<ul>
-  <li>Thresholds for spike and flatline detection are configurable estimates, not
-      calibrated instrument specifications. Short flatlines (≤ 1 h) are flagged for
-      awareness but may represent genuine stable atmospheric conditions.</li>
-  <li>Cross-station comparison is qualitative: stations differ in elevation and
-      local microclimate, so agreement is expected but not guaranteed.</li>
-  <li>The maintenance log is from volunteer memory and may be incomplete or imprecise
-      about exact times.</li>
-  <li>GPS position offsets are within GPS accuracy for most stations and do not
-      indicate significant location errors.</li>
-  <li>Rain-gauge blockage periods (e.g. S04 before 2025-04-02) cannot be
-      distinguished from genuine dry periods without cross-station rainfall comparison.</li>
-</ul>
-
-<div class="footer">
-Ridgeline Schools Weather Network — Automated Quality Report.
-Data based on ERA5 reanalysis (Copernicus Climate Change Service, CC BY 4.0).
-Station names, people, hardware and notes are fictional (assignment dataset).
-This report is for the assignment evaluation only.
-</div>
+<main>
+ <header>
+  <div class="masthead"><div class="network">Ridgeline Schools Weather Network</div><div class="window">42 days / 8 stations</div></div>
+  <h1>Data for the summary.<br>One visit for next week.</h1>
+  <p class="period">01 Mar 2025–11 Apr 2025 · UTC</p>
+  <p class="decision">Visit S04: Foothills Community Garden.</p>
+ </header>
+ <section aria-labelledby="data-title">
+  <div class="section-head"><h2 id="data-title"><span class="section-number">01</span>What can go into the summary?</h2><span class="eyebrow">Usable share · % of expected intervals</span></div>
+  <p class="overview-note">Use unaffected channels. Set aside flagged intervals; apply clock and replay treatments first.</p>
+  <table aria-label="Station coverage and required treatments">
+   <colgroup><col class="station"><col class="percent" span="7"><col class="action"></colgroup>
+   <thead><tr><th scope="col">Station</th><th scope="col">Temp</th><th scope="col">RH</th><th scope="col">Press</th><th scope="col">Wind</th><th scope="col">Dir</th><th scope="col">Rain</th><th scope="col">Sun</th><th scope="col">Treatment before inclusion</th></tr></thead>
+   <tbody><tr><th scope="row"><b>S01</b><span class="site-name">Saddle Ridge Hut</span></th><td class="coverage complete" data-channel="temp_c" title="6,048 of 6,048 expected: 0 missing, 0 excluded, 0 awaiting treatment">100</td><td class="coverage complete" data-channel="rh_pct" title="6,048 of 6,048 expected: 0 missing, 0 excluded, 0 awaiting treatment">100</td><td class="coverage complete" data-channel="pressure_hpa" title="6,048 of 6,048 expected: 0 missing, 0 excluded, 0 awaiting treatment">100</td><td class="coverage complete" data-channel="wind_kmh" title="6,048 of 6,048 expected: 0 missing, 0 excluded, 0 awaiting treatment">100</td><td class="coverage complete" data-channel="wind_dir_deg" title="6,048 of 6,048 expected: 0 missing, 0 excluded, 0 awaiting treatment">100</td><td class="coverage complete" data-channel="rain_mm" title="6,048 of 6,048 expected: 0 missing, 0 excluded, 0 awaiting treatment">100</td><td class="coverage complete" data-channel="ghi_wm2" title="6,048 of 6,048 expected: 0 missing, 0 excluded, 0 awaiting treatment">100</td><td class="treatment">Use all channels after the stated checks.</td></tr><tr><th scope="row"><b>S02</b><span class="site-name">North Mesa School</span></th><td class="coverage complete" data-channel="temp_c" title="6,048 of 6,048 expected: 0 missing, 0 excluded, 0 awaiting treatment">100</td><td class="coverage complete" data-channel="rh_pct" title="6,048 of 6,048 expected: 0 missing, 0 excluded, 0 awaiting treatment">100</td><td class="coverage restricted" data-channel="pressure_hpa" title="2,984 of 6,048 expected: 0 missing, 3,064 excluded, 0 awaiting treatment">49.3</td><td class="coverage complete" data-channel="wind_kmh" title="6,048 of 6,048 expected: 0 missing, 0 excluded, 0 awaiting treatment">100</td><td class="coverage complete" data-channel="wind_dir_deg" title="6,048 of 6,048 expected: 0 missing, 0 excluded, 0 awaiting treatment">100</td><td class="coverage complete" data-channel="rain_mm" title="6,048 of 6,048 expected: 0 missing, 0 excluded, 0 awaiting treatment">100</td><td class="coverage complete" data-channel="ghi_wm2" title="6,048 of 6,048 expected: 0 missing, 0 excluded, 0 awaiting treatment">100</td><td class="treatment">Withhold pressure from 21 Mar 17:20.</td></tr><tr><th scope="row"><b>S03</b><span class="site-name">Valley Library</span></th><td class="coverage restricted" data-channel="temp_c" title="5,565 of 6,048 expected: 0 missing, 483 excluded, 0 awaiting treatment">92.0</td><td class="coverage complete" data-channel="rh_pct" title="6,048 of 6,048 expected: 0 missing, 0 excluded, 0 awaiting treatment">100</td><td class="coverage complete" data-channel="pressure_hpa" title="6,048 of 6,048 expected: 0 missing, 0 excluded, 0 awaiting treatment">100</td><td class="coverage complete" data-channel="wind_kmh" title="6,048 of 6,048 expected: 0 missing, 0 excluded, 0 awaiting treatment">100</td><td class="coverage complete" data-channel="wind_dir_deg" title="6,048 of 6,048 expected: 0 missing, 0 excluded, 0 awaiting treatment">100</td><td class="coverage complete" data-channel="rain_mm" title="6,048 of 6,048 expected: 0 missing, 0 excluded, 0 awaiting treatment">100</td><td class="coverage complete" data-channel="ghi_wm2" title="6,048 of 6,048 expected: 0 missing, 0 excluded, 0 awaiting treatment">100</td><td class="treatment">Drop 2 invalid temperature reading(s). Drop frozen temperature 18 Mar–21 Mar.</td></tr><tr><th scope="row"><b>S04</b><span class="site-name">Foothills Community Garden</span></th><td class="coverage restricted" data-channel="temp_c" title="4,299 of 6,048 expected: 0 missing, 1,749 excluded, 0 awaiting treatment">71.1</td><td class="coverage complete" data-channel="rh_pct" title="6,048 of 6,048 expected: 0 missing, 0 excluded, 0 awaiting treatment">100</td><td class="coverage complete" data-channel="pressure_hpa" title="6,048 of 6,048 expected: 0 missing, 0 excluded, 0 awaiting treatment">100</td><td class="coverage complete" data-channel="wind_kmh" title="6,048 of 6,048 expected: 0 missing, 0 excluded, 0 awaiting treatment">100</td><td class="coverage complete" data-channel="wind_dir_deg" title="6,048 of 6,048 expected: 0 missing, 0 excluded, 0 awaiting treatment">100</td><td class="coverage restricted" data-channel="rain_mm" title="4,544 of 6,048 expected: 0 missing, 1,504 excluded, 0 awaiting treatment">75.1</td><td class="coverage complete" data-channel="ghi_wm2" title="6,048 of 6,048 expected: 0 missing, 0 excluded, 0 awaiting treatment">100</td><td class="treatment">Withhold daytime temperature from 15 Mar; onset uncertain. Withhold rain 23 Mar–2 Apr; drainage is undated.</td></tr><tr><th scope="row"><b>S05</b><span class="site-name">Eastside Rec Centre</span></th><td class="coverage complete" data-channel="temp_c" title="6,048 of 6,048 expected: 0 missing, 0 excluded, 0 awaiting treatment">100</td><td class="coverage restricted" data-channel="rh_pct" title="5,543 of 6,048 expected: 0 missing, 505 excluded, 0 awaiting treatment">91.7</td><td class="coverage complete" data-channel="pressure_hpa" title="6,048 of 6,048 expected: 0 missing, 0 excluded, 0 awaiting treatment">100</td><td class="coverage complete" data-channel="wind_kmh" title="6,048 of 6,048 expected: 0 missing, 0 excluded, 0 awaiting treatment">100</td><td class="coverage complete" data-channel="wind_dir_deg" title="6,048 of 6,048 expected: 0 missing, 0 excluded, 0 awaiting treatment">100</td><td class="coverage complete" data-channel="rain_mm" title="6,048 of 6,048 expected: 0 missing, 0 excluded, 0 awaiting treatment">100</td><td class="coverage complete" data-channel="ghi_wm2" title="6,048 of 6,048 expected: 0 missing, 0 excluded, 0 awaiting treatment">100</td><td class="treatment">Withhold humidity 7 Mar–11 Mar. Confirm location before mapping.</td></tr><tr><th scope="row"><b>S06</b><span class="station-badge">Fix first</span><span class="site-name">South Hills Fire Station</span></th><td class="coverage complete" data-channel="temp_c" title="6,048 of 6,048 expected: 0 missing, 0 excluded, 0 awaiting treatment">100</td><td class="coverage complete" data-channel="rh_pct" title="6,048 of 6,048 expected: 0 missing, 0 excluded, 0 awaiting treatment">100</td><td class="coverage complete" data-channel="pressure_hpa" title="6,048 of 6,048 expected: 0 missing, 0 excluded, 0 awaiting treatment">100</td><td class="coverage complete" data-channel="wind_kmh" title="6,048 of 6,048 expected: 0 missing, 0 excluded, 0 awaiting treatment">100</td><td class="coverage complete" data-channel="wind_dir_deg" title="6,048 of 6,048 expected: 0 missing, 0 excluded, 0 awaiting treatment">100</td><td class="coverage complete" data-channel="rain_mm" title="6,048 of 6,048 expected: 0 missing, 0 excluded, 0 awaiting treatment">100</td><td class="coverage complete" data-channel="ghi_wm2" title="6,048 of 6,048 expected: 0 missing, 0 excluded, 0 awaiting treatment">100</td><td class="treatment">Use after +6 h clock repair (2,639 records).</td></tr><tr><th scope="row"><b>S07</b><span class="site-name">Riverbend Farm</span></th><td class="coverage complete" data-channel="temp_c" title="6,048 of 6,048 expected: 0 missing, 0 excluded, 0 awaiting treatment">100</td><td class="coverage complete" data-channel="rh_pct" title="6,048 of 6,048 expected: 0 missing, 0 excluded, 0 awaiting treatment">100</td><td class="coverage complete" data-channel="pressure_hpa" title="6,048 of 6,048 expected: 0 missing, 0 excluded, 0 awaiting treatment">100</td><td class="coverage restricted" data-channel="wind_kmh" title="3,684 of 6,048 expected: 0 missing, 2,364 excluded, 0 awaiting treatment">60.9</td><td class="coverage complete" data-channel="wind_dir_deg" title="6,048 of 6,048 expected: 0 missing, 0 excluded, 0 awaiting treatment">100</td><td class="coverage complete" data-channel="rain_mm" title="6,048 of 6,048 expected: 0 missing, 0 excluded, 0 awaiting treatment">100</td><td class="coverage complete" data-channel="ghi_wm2" title="6,048 of 6,048 expected: 0 missing, 0 excluded, 0 awaiting treatment">100</td><td class="treatment">Withhold wind speed from 26 Mar 14:00.</td></tr><tr><th scope="row"><b>S08</b><span class="station-badge">Fix first</span><span class="site-name">Plains Grange Hall</span></th><td class="coverage restricted" data-channel="temp_c" title="5,834 of 6,048 expected: 214 missing, 0 excluded, 0 awaiting treatment">96.5</td><td class="coverage restricted" data-channel="rh_pct" title="5,834 of 6,048 expected: 214 missing, 0 excluded, 0 awaiting treatment">96.5</td><td class="coverage restricted" data-channel="pressure_hpa" title="5,834 of 6,048 expected: 214 missing, 0 excluded, 0 awaiting treatment">96.5</td><td class="coverage restricted" data-channel="wind_kmh" title="5,834 of 6,048 expected: 214 missing, 0 excluded, 0 awaiting treatment">96.5</td><td class="coverage restricted" data-channel="wind_dir_deg" title="5,834 of 6,048 expected: 214 missing, 0 excluded, 0 awaiting treatment">96.5</td><td class="coverage restricted" data-channel="rain_mm" title="5,834 of 6,048 expected: 214 missing, 0 excluded, 0 awaiting treatment">96.5</td><td class="coverage restricted" data-channel="ghi_wm2" title="5,834 of 6,048 expected: 214 missing, 0 excluded, 0 awaiting treatment">96.5</td><td class="treatment">Remove 144 exact replay rows before use. Leave 214 missing intervals blank.</td></tr></tbody>
+  </table>
+  <p class="legend">RH = humidity; Dir = wind direction; Sun = sunlight. Missing intervals stay in the denominator; overlap counts once. Percentages assume listed clock/replay fixes; original files are unchanged. Exact UTC windows: <b>flags.csv</b>.</p>
+ </section>
+ <section aria-labelledby="visit-title">
+  <div class="section-head"><h2 id="visit-title"><span class="section-number">02</span>Where should the technician spend one hour?</h2><span class="eyebrow">Unresolved faults first</span></div>
+  <div class="visit-grid"><div><h3>S04 <span>Foothills Community Garden</span></h3><p class="visit-reason">Temperature is still suspect in daylight; a physical exposure check can prevent further biased readings.</p><p class="first-check"><b>Check first</b> Check airflow and the radiation shield before changing the logger settings.</p><ol class="visit-steps"><li>0–10 min: photograph the shield, vents and painted support; check for blocked airflow or contact with the post.</li><li>10–40 min: compare with a shaded, ventilated reference thermometer; clean or restore the shield as needed.</li><li>40–60 min: record before/after readings and UTC time; leave the suspect period withheld until a later daylight comparison passes.</li></ol><p class="bring"><b>Bring</b> Reference thermometer, cleaning brush and camera.</p></div><aside><h3>Why not S07 first?</h3><p>Riverbend Farm has an unresolved wind sensor scaling problem.</p><p>Air-temperature exposure is central to the climate summary and needs a physical shield check; that makes it the first use of the on-site hour.</p><p><b>Before another trip</b> Request a photo of the sensor label and logger settings first; a documented mismatch may be resolved remotely.</p><p class="confirm"><b>Confirm before travelling</b> Confirm that the recorded site work has not already been reversed.</p></aside></div>
+ </section>
+ <section class="cautions" aria-labelledby="cautions-title"><h2 id="cautions-title">Keep these qualifications with the decision</h2><ul><li>S04: the flagged site-work or blocked-gauge boundaries are cautious exclusions, not known failure times; do not invent corrections or redistribute drainage.</li><li>S05: receiver and install-sheet positions disagree; verify the site before spatial use.</li><li>Peer-supported humid weather and coherent weather changes are retained, even when they look unusual.</li><li>Coverage is eligibility after treatment, not proof of calibration; unflagged records pass the applicable checks only.</li></ul></section>
+ <footer><span>256 evidence flags · generated 28 Oct 2026 18:53 UTC</span><span>Supplied weather data: ERA5 / Copernicus, CC BY 4.0</span></footer>
+</main>
 </body>
 </html>

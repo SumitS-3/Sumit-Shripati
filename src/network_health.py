@@ -1,223 +1,216 @@
-"""
-Network health analysis.
-
-Computes per-station and per-channel quality summaries from flags.csv data.
-Answers the two coordinator decisions:
-  1. Which station data is suitable for the spring climate summary?
-  2. Which single station should receive the technician visit?
-"""
+"""Coverage after treatment and prospective visit triage, independent of flag count."""
 from __future__ import annotations
 
-import logging
 from dataclasses import dataclass, field
-from typing import Dict, List, Optional, Tuple
 
+import numpy as np
 import pandas as pd
 
-logger = logging.getLogger(__name__)
+from .config import CheckerConfig
+from .evidence import interval_mask
+from .findings import PROFILES, FindingProfile, finding_kind
+from .schema import NUMERIC_COLUMNS
 
 
-@dataclass
+@dataclass(frozen=True)
 class ChannelSummary:
     channel: str
-    total_records: int
+    total_records: int  # expected slots, including absent timestamps
+    observed_records: int
+    missing_records: int
     excluded_records: int
-    uncertain_records: int
-    correctable_records: int
-
-    @property
-    def usable_records(self) -> int:
-        return max(0, self.total_records - self.excluded_records)
+    pending_records: int
+    usable_records: int
+    corrected_records: int
 
     @property
     def usable_pct(self) -> float:
-        if self.total_records == 0:
-            return 0.0
-        return 100.0 * self.usable_records / self.total_records
+        return 100 * self.usable_records / self.total_records if self.total_records else 0.0
+
+
+@dataclass(frozen=True)
+class Finding:
+    kind: str
+    channel: str
+    start: pd.Timestamp
+    end: pd.Timestamp
+    flags: tuple[dict, ...]
+    affected_records: int
 
     @property
-    def status(self) -> str:
-        pct = self.usable_pct
-        if pct >= 95.0:
-            return "Good"
-        elif pct >= 80.0:
-            return "Usable (with caveats)"
-        elif pct >= 50.0:
-            return "Partial"
-        else:
-            return "Unreliable"
+    def profile(self) -> FindingProfile:
+        return PROFILES.get(self.kind, PROFILES["unknown"])
+
+
+@dataclass(frozen=True)
+class ClockAdjustment:
+    minutes: float
+    records: int
 
 
 @dataclass
 class StationSummary:
     station_id: str
     name: str
-    total_records: int
-    channels: Dict[str, ChannelSummary] = field(default_factory=dict)
-    exclude_flags: List[dict] = field(default_factory=list)
-    correct_flags: List[dict] = field(default_factory=list)
-    keep_flags: List[dict] = field(default_factory=list)
-    metadata_flags: List[dict] = field(default_factory=list)
-    has_duplicate_timestamps: bool = False
-    has_data_gap: bool = False
-    maintenance_notes: List[str] = field(default_factory=list)
-
-    @property
-    def critical_issue_count(self) -> int:
-        return len(self.exclude_flags)
+    total_records: int = 0  # unique observations retained by the temporal pipeline
+    expected_records: int = 0
+    interval_min: int = 10
+    period_start: pd.Timestamp | None = None
+    period_end: pd.Timestamp | None = None
+    channels: dict[str, ChannelSummary] = field(default_factory=dict)
+    exclude_flags: list[dict] = field(default_factory=list)
+    correct_flags: list[dict] = field(default_factory=list)
+    keep_flags: list[dict] = field(default_factory=list)
+    metadata_flags: list[dict] = field(default_factory=list)
+    findings: list[Finding] = field(default_factory=list)
+    clock_adjustments: list[ClockAdjustment] = field(default_factory=list)
+    replayed_records: int = 0
+    has_missing_tail: bool = False
+    analysis_failed: bool = False
 
     @property
     def overall_status(self) -> str:
-        # Determine worst channel status
-        if not self.channels:
-            return "Unknown"
-        statuses = [cs.status for cs in self.channels.values()]
-        if "Unreliable" in statuses:
-            return "Unreliable"
-        if "Partial" in statuses:
-            return "Partial"
-        if "Usable (with caveats)" in statuses:
-            return "Usable (with caveats)"
+        if self.analysis_failed:
+            return "Hold"
+        if not self.expected_records:
+            return "Not assessed"
+        if any(channel.pending_records for channel in self.channels.values()):
+            return "Treatment pending"
+        if any(channel.missing_records or channel.excluded_records for channel in self.channels.values()):
+            return "Use selected data"
         return "Good"
 
+
+def _expected_grid(start: pd.Timestamp | None, end: pd.Timestamp | None,
+                   frame: pd.DataFrame, cadence: int, installed) -> pd.DatetimeIndex:
+    if start is None or end is None:
+        return pd.DatetimeIndex([])
+    installation = pd.to_datetime(installed, errors="coerce")
+    if pd.notna(installation):
+        start = max(start, installation)
+    if start > end:
+        return pd.DatetimeIndex([])
+    step = pd.Timedelta(minutes=cadence).value
+    phase = pd.Timestamp(frame.timestamp_utc.iloc[0]).value % step if not frame.empty else start.value % step
+    first = ((start.value - phase + step - 1) // step) * step + phase
+    return pd.date_range(pd.Timestamp(first), end, freq=pd.Timedelta(minutes=cadence))
+
+
+def _group_findings(flags: list[dict], grid: pd.Series) -> list[Finding]:
+    groups: dict[tuple[str, str], list[dict]] = {}
+    for flag in flags:
+        if flag.get("action") != "exclude" or flag.get("channel") == "metadata":
+            continue
+        groups.setdefault((finding_kind(flag.get("issue", "")), flag["channel"]), []).append(flag)
+    findings = []
+    for (kind, channel), members in groups.items():
+        starts = [pd.Timestamp(flag.get("start_utc")) for flag in members]
+        ends = [pd.Timestamp(flag.get("end_utc")) for flag in members]
+        starts, ends = [time for time in starts if pd.notna(time)], [time for time in ends if pd.notna(time)]
+        if starts and ends:
+            findings.append(Finding(kind, channel, min(starts), max(ends), tuple(members),
+                                    int(interval_mask(grid, members, channel).sum())))
+    return findings
+
+
+def compute_station_summaries(station_data: dict[str, pd.DataFrame], flags_df: pd.DataFrame,
+                               stations_meta: pd.DataFrame,
+                               configs: dict[str, CheckerConfig] | None = None) -> dict[str, StationSummary]:
+    """Reindex one station at a time on its cadence within the common network window.
+
+    Missing slots, excluded observations and pending treatments are disjoint. Keep
+    flags are not uncertain data. Clock/replay treatments count as applied only when
+    the temporal pipeline records that fact; CSV labels alone do not prove repair.
+    """
+    metadata = {str(row["station_id"]): row.to_dict() for _, row in stations_meta.iterrows()} if "station_id" in stations_meta else {}
+    grouped = {str(sid): group.to_dict("records") for sid, group in flags_df.groupby("station_id")} if "station_id" in flags_df else {}
+    available = [frame for frame in station_data.values() if not frame.empty]
+    start = min(frame.timestamp_utc.min() for frame in available) if available else None
+    end = max(frame.timestamp_utc.max() for frame in available) if available else None
+    result = {}
+    for sid in sorted(set(station_data) | set(metadata) | set(grouped)):
+        meta, flags = metadata.get(sid, {}), grouped.get(sid, [])
+        frame = station_data.get(sid, pd.DataFrame(columns=["timestamp_utc", *NUMERIC_COLUMNS]))
+        failed = sid not in station_data or any(finding_kind(flag.get("issue", "")) in ("failed", "unresolved") for flag in flags)
+        if frame.attrs.get("temporal_unresolved"):
+            failed = True
+        try:
+            cadence = configs[sid].sampling_interval_min if configs and sid in configs else int(meta.get("logger_interval_min", 10))
+            if cadence <= 0:
+                raise ValueError("invalid cadence")
+        except (TypeError, ValueError):
+            cadence, failed = 10, True
+        grid = _expected_grid(start, end, frame, cadence, meta.get("installed"))
+        grid_series = pd.Series(grid)
+        indexed = frame.set_index("timestamp_utc")
+        if not indexed.index.is_unique:
+            raise ValueError(f"{sid}: summaries require deduplicated observation timestamps")
+        aligned = indexed.reindex(grid)
+        present = pd.Series(grid.isin(indexed.index))
+        weather = [flag for flag in flags if flag.get("channel") != "metadata"]
+        applied = set(frame.attrs.get("treatments_applied", ()))
+        pending = [flag for flag in weather if flag.get("action") == "correct" and
+                   finding_kind(flag.get("issue", "")) not in applied]
+        delta = ((aligned.index.to_series(index=aligned.index) - aligned.logger_timestamp_utc).dt.total_seconds() / 60
+                 if "logger_timestamp_utc" in aligned else pd.Series(0.0, index=grid))
+        shifted = pd.Series(delta.fillna(0).ne(0).to_numpy())
+        channels = {}
+        for channel in NUMERIC_COLUMNS:
+            values = aligned[channel] if channel in aligned else pd.Series(float("nan"), index=grid)
+            finite = pd.Series(np.isfinite(pd.to_numeric(values, errors="coerce").to_numpy(dtype=float)))
+            excluded = present & (interval_mask(grid_series, weather, channel) | ~finite | failed)
+            treatment = present & ~excluded & interval_mask(grid_series, pending, channel, ("correct",))
+            usable = present & ~excluded & ~treatment
+            channels[channel] = ChannelSummary(channel, len(grid), int(present.sum()), int((~present).sum()),
+                int(excluded.sum()), int(treatment.sum()), int(usable.sum()), int((usable & shifted).sum()))
+        adjustments = [ClockAdjustment(float(minutes), int(count)) for minutes, count in delta.dropna().loc[lambda series: series.ne(0)].value_counts().sort_index().items()]
+        name = meta.get("name", sid)
+        summary = StationSummary(
+            station_id=sid, name=str(name) if pd.notna(name) else sid,
+            total_records=len(frame), expected_records=len(grid), interval_min=cadence,
+            period_start=start, period_end=end, channels=channels,
+            exclude_flags=[flag for flag in weather if flag.get("action") == "exclude"],
+            correct_flags=[flag for flag in weather if flag.get("action") == "correct"],
+            keep_flags=[flag for flag in weather if flag.get("action") == "keep"],
+            metadata_flags=[flag for flag in flags if flag.get("channel") == "metadata"],
+            findings=_group_findings(weather, grid_series), clock_adjustments=adjustments,
+            replayed_records=int(frame.attrs.get("replayed_records", 0)),
+            has_missing_tail=bool(not frame.empty and len(grid) and frame.timestamp_utc.max() < grid[-1]),
+            analysis_failed=failed,
+        )
+        result[sid] = summary
+    return result
+
+
+@dataclass(frozen=True)
+class VisitCandidate:
+    station_id: str
+    finding: Finding
+
     @property
-    def climate_summary_recommendation(self) -> str:
-        status = self.overall_status
-        if status == "Good":
-            return "Include"
-        elif status == "Usable (with caveats)":
-            return "Include with corrections noted"
-        elif status == "Partial":
-            return "Include usable channels; exclude flagged periods"
-        else:
-            return "Exclude or manual review required"
+    def profile(self) -> FindingProfile:
+        return self.finding.profile
 
 
-def compute_station_summaries(
-    station_data: Dict[str, pd.DataFrame],
-    flags_df: pd.DataFrame,
-    stations_meta: pd.DataFrame,
-) -> Dict[str, StationSummary]:
-    """
-    Build StationSummary for each station based on loaded data and flags.
-    """
-    summaries: Dict[str, StationSummary] = {}
-
-    # Build meta lookup
-    meta_lookup: Dict[str, str] = {}
-    if not stations_meta.empty and "station_id" in stations_meta.columns:
-        for _, row in stations_meta.iterrows():
-            meta_lookup[row["station_id"]] = row.get("name", row["station_id"])
-
-    # Channels that matter for climate summary
-    CLIMATE_CHANNELS = ["temp_c", "rh_pct", "pressure_hpa", "wind_kmh", "rain_mm", "ghi_wm2"]
-
-    for sid, df in station_data.items():
-        name = meta_lookup.get(sid, sid)
-        n_total = len(df)
-
-        # Flags for this station
-        if not flags_df.empty and "station_id" in flags_df.columns:
-            st_flags = flags_df[flags_df["station_id"] == sid].to_dict("records")
-        else:
-            st_flags = []
-
-        # Discarded GPS packets are not discarded weather observations or evidence
-        # of a repairable weather-sensor fault.
-        metadata_flags = [f for f in st_flags if f.get("channel") == "metadata"]
-        weather_flags = [f for f in st_flags if f.get("channel") != "metadata"]
-        exclude_flags = [f for f in weather_flags if f.get("action") == "exclude"]
-        correct_flags = [f for f in weather_flags if f.get("action") == "correct"]
-        keep_flags    = [f for f in weather_flags if f.get("action") == "keep"]
-        has_gap       = any("gap" in f.get("issue", "").lower() for f in exclude_flags)
-        has_dup       = any(any(word in f.get("issue", "").lower() for word in ("duplicate", "replay"))
-                            for f in (exclude_flags + correct_flags))
-
-        # Per-channel summaries
-        channel_sums: Dict[str, ChannelSummary] = {}
-        for col in CLIMATE_CHANNELS:
-            if col not in df.columns:
-                continue
-            col_flags = [f for f in st_flags if f.get("channel") in (col, "all")]
-            excluded = 0
-            uncertain = 0
-            correctable = 0
-            for f in col_flags:
-                # Estimate records covered by this flag
-                try:
-                    t0 = pd.Timestamp(f.get("start_utc", ""))
-                    t1 = pd.Timestamp(f.get("end_utc", "") or f.get("start_utc", ""))
-                    covered = max(1, int((t1 - t0).total_seconds() / 600) + 1)
-                except Exception:
-                    covered = 1
-                if f.get("action") == "exclude":
-                    excluded += covered
-                elif f.get("action") == "correct":
-                    correctable += covered
-                elif f.get("action") == "keep":
-                    uncertain += covered
-            excluded = min(excluded, n_total)
-            channel_sums[col] = ChannelSummary(
-                channel=col,
-                total_records=n_total,
-                excluded_records=excluded,
-                uncertain_records=uncertain,
-                correctable_records=correctable,
-            )
-
-        summaries[sid] = StationSummary(
-            station_id=sid,
-            name=name,
-            total_records=n_total,
-            channels=channel_sums,
-            exclude_flags=exclude_flags,
-            correct_flags=correct_flags,
-            keep_flags=keep_flags,
-            metadata_flags=metadata_flags,
-            has_duplicate_timestamps=has_dup,
-            has_data_gap=has_gap,
-        )
-
-    return summaries
+def visit_candidate(summary: StationSummary) -> VisitCandidate | None:
+    """Recent recurring daylight faults remain live even when the pack ends at night."""
+    if summary.analysis_failed or summary.period_end is None:
+        return None
+    active = [finding for finding in summary.findings if finding.affected_records > 0
+              and finding.start <= summary.period_end and finding.end >= summary.period_end - pd.Timedelta(days=1)
+              and finding.kind not in ("gap", "conflicts", "unresolved")]
+    if summary.has_missing_tail:
+        active.append(Finding("gap", "all", summary.period_end, summary.period_end, (), 0))
+    if not active:
+        return None
+    best = max(active, key=lambda finding: (finding.profile.priority, finding.kind, finding.channel))
+    return VisitCandidate(summary.station_id, best)
 
 
-def recommend_technician_visit(
-    summaries: Dict[str, StationSummary],
-) -> Tuple[Optional[str], Optional[str]]:
-    """
-    Select the station that would benefit most from a 1-hour technician visit.
-
-    Prioritises:
-      - Hardware failures that cannot be corrected remotely
-      - Persistent multi-channel failures
-      - Issues with on-site-fixable root causes
-      - High evidence of sensor malfunction (not just data gaps)
-
-    Returns (best_station_id, runner_up_station_id).
-    """
-    # Score each station by problem severity
-    scores: Dict[str, float] = {}
-    for sid, summary in summaries.items():
-        score = 0.0
-        # Severe problems: many excluded flags
-        score += len(summary.exclude_flags) * 2.0
-        # Correction-needed flags (less severe)
-        score += len(summary.correct_flags) * 1.0
-        # Data gap penalty
-        if summary.has_data_gap:
-            score += 5.0
-        # Duplicate-timestamp penalty
-        if summary.has_duplicate_timestamps:
-            score += 3.0
-        # Multi-channel failures (exponential penalty)
-        unreliable_channels = sum(
-            1 for cs in summary.channels.values() if cs.status in ("Unreliable", "Partial")
-        )
-        score += unreliable_channels ** 2
-        scores[sid] = score
-
-    ranked = sorted(scores, key=lambda s: scores[s], reverse=True)
-    best    = ranked[0] if len(ranked) >= 1 else None
-    runner  = ranked[1] if len(ranked) >= 2 else None
-    return best, runner
-
+def recommend_technician_visit(summaries: dict[str, StationSummary]) -> tuple[str | None, str | None]:
+    """Rank unresolved, on-site-checkable problems; splitting flags cannot raise rank."""
+    candidates = [candidate for summary in summaries.values() if (candidate := visit_candidate(summary)) is not None]
+    ranked = sorted(candidates, key=lambda candidate: (-candidate.profile.priority, candidate.station_id))
+    first = ranked[0].station_id if ranked else None
+    second = ranked[1].station_id if len(ranked) > 1 else None
+    return first, second

@@ -163,16 +163,66 @@ calibration reference. See the formula reference in `src/solar.py`.
 
 Suggested commit: `feat: validate weather faults with bounded peer evidence`
 
-## Phase 3 - coordinator report and visit priority
+## Phase 3 - coordinator report and visit priority (complete)
 
-- Count the union of affected slots so overlapping flags cannot double-count loss;
-  include absent slots in completeness and distinguish corrections still required.
-- Replace the hardcoded observation dates and station-level "Include" shortcuts
-  with actual periods and channel-specific instructions.
-- Rank visits by current, fixable problems and likely benefit, rather than the
-  number of flags. Provide an evidence-based one-hour task and runner-up comparison.
-- Replace the generic inspection list and unsupported limitations with the findings
-  actually established in Phase 2. Verify an A4 print layout of at most two pages.
+- Coverage uses each station's cadence and logging phase within the common network
+  period, cropped by its recorded installation date. Missing timestamps remain in
+  the denominator; overlapping exclusions count once. Missing slots, excluded
+  observations and pending corrections are disjoint. All seven sensor channels,
+  including wind direction, are included.
+- Keep-flags do not reduce eligibility or count as uncertainty. Clock/replay fixes
+  count as applied only when the temporal pipeline records the treatment. Unknown
+  or unapplied corrections remain pending. Failure rows remain visible as Hold,
+  even if the station has no readable observations.
+- Per-station treatments replace the old percentage-based "Include" shortcuts:
+  a small excluded period cannot silently turn into an unqualified green light.
+  The report explains that percentages assume listed time/replay treatments and
+  are not a calibration score; original files remain unchanged.
+- The visit policy ranks unresolved, on-site-checkable problems at the pack end.
+  Historical gaps, recovered humidity/flatline episodes and discarded GPS packets
+  cannot win by generating more flags. Recurring daylight problems remain live
+  when the last observation is at night. Fragmenting an interval cannot raise rank.
+- The supplied pack recommends **S04, Foothills Community Garden**, for the ongoing
+  temperature exposure problem, with **S07, Riverbend Farm**, as runner-up. The
+  report gives a timed one-hour shield/reference-temperature inspection, a check-first
+  instruction, equipment, the reason for this order and a remote sensor-label/settings
+  check for S07. This is an explicit triage policy, not a claim of mathematical optimality.
+- A static, self-contained A4 template separates presentation from coverage and
+  diagnosis. Dynamic text is HTML-escaped. Dates, names, fractions, treatments and
+  visit steps come from the run. Larger networks show at most 12 priority rows and
+  disclose omissions; qualifications are bounded rather than listing hundreds of IDs.
+- CSV and HTML share an atomic writer. A failed replacement preserves the prior
+  deliverable; output file symlinks are not followed to overwrite their targets.
+  Once coverage is computed, the CLI releases station frames before rendering HTML.
+
+Validation: `python -m pytest -q` passes **173 tests**; one file-symlink test is
+skipped because Windows does not permit creating the link in this environment.
+New cases cover overlapping intervals, absent edge/internal timestamps, missing
+values, logging phases/cadences, installation dates, applied versus pending fixes,
+failed stations, wind direction, visit ranking invariant to fragmentation, dynamic
+report periods, HTML escaping, bounded large reports and atomic output failure.
+
+The root `report.html` was rendered in headless Chrome and visually inspected as
+**one A4 portrait page**. The preview PDF and image remain under ignored
+`scratch/phase3/`; a PDF/browser dependency is not required to run the checker.
+
+Key eligible shares after treatment in this pack:
+
+| Station/channel | Share retained |
+| --- | --- |
+| S02 pressure | 49.3% |
+| S03 temperature | 92.0% |
+| S04 temperature / rain | 71.1% / 75.1% |
+| S05 humidity | 91.7% |
+| S06 all channels | 100%, after the +6 h treatment of 2,639 records |
+| S07 wind speed | 60.9% |
+| S08 all channels | 96.5%, after removing 144 replay rows; 214 slots remain missing |
+
+The existing `flags.csv` decisions are unchanged. The original 19 data-pack files
+remain unchanged. Final submission preparation, including the candidate-authored
+decisions and recording, remains in Phase 4.
+
+Suggested commit: `feat: add actionable network report and evidence-based visit triage`
 
 ## Phase 4 - submission preparation
 
