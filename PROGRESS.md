@@ -27,7 +27,7 @@ in ignored `scratch/phase1/`; the root `flags.csv` and `report.html` are still t
 earlier outputs and are **not final deliverables**. More flags after interval
 splitting do not mean that more observations are faulty.
 
-Suggested commit: `fix: preserve precise problem intervals and ignore the data pack`
+commit: `fix: preserve precise problem intervals and ignore the data pack`
 
 ## Phase 2a - GPS, clock and replay integrity (complete)
 
@@ -85,7 +85,7 @@ Diagnostic outputs are under ignored `scratch/phase2a/`. The root `flags.csv` an
 `report.html` remain the previous, preliminary deliverables until the remaining
 weather decisions are validated.
 
-Suggested commit: `feat: validate GPS clocks and resolve observation replays`
+commit: `feat: validate GPS clocks and resolve observation replays`
 
 ## Phase 2b - weather evidence and defensible treatments (complete)
 
@@ -161,7 +161,7 @@ is skipped, not that the data is certified. The solar heating and rain onset bou
 are conservative judgements. Neither peer differences nor this checker replace a
 calibration reference. See the formula reference in `src/solar.py`.
 
-Suggested commit: `feat: validate weather faults with bounded peer evidence`
+commit: `feat: validate weather faults with bounded peer evidence`
 
 ## Phase 3 - coordinator report and visit priority (complete)
 
@@ -222,18 +222,40 @@ The existing `flags.csv` decisions are unchanged. The original 19 data-pack file
 remain unchanged. Final submission preparation, including the candidate-authored
 decisions and recording, remains in Phase 4.
 
-Suggested commit: `feat: add actionable network report and evidence-based visit triage`
+commit: `feat: add actionable network report and evidence-based visit triage`
 
-## Phase 4 - submission preparation
+## Phase 4 - submission preparation (files prepared; candidate items pending)
 
-- Replace the root data-pack README with run/install instructions, checks,
-  assumptions and limitations; start with name, email, video link and `Run:`.
-- The candidate writes `DECISIONS.md` in their own words, within 1.5 pages. The
-  brief explicitly requires the S04 solar-noon working to be done without code or
-  AI; that answer must come from the candidate.
-- Add complete, unedited AI conversation exports under `ai_logs/`; do not substitute
-  a generated summary for the required exports.
-- The candidate records the three-minute evidence walkthrough and supplies its link.
-  Check repository naming and the submission checklist before submission.
+- Replaced the copied data-pack README with installation/run instructions, each
+  implemented check, output semantics, configuration, benchmark scope and limitations.
+  The first four lines contain the candidate-confirmed full name and email, an
+  explicit video-link placeholder and the single run command.
+- Added `docs/video-demo.md`: a roughly 375-word, three-minute walkthrough with
+  prepared screen actions and checked raw-file timestamps. It uses the S06 clock
+  correction as a strong example and S04 rain onset as an optional uncertain example.
+  It explicitly points to the final root report, not the old Phase 2b scratch preview.
+- Added `docs/decisions-guide.md` with evidence pointers and questions for all five
+  required sections. It identifies an actual exploratory GPS-parsing error to verify
+  in the chat export, without inventing a personal discovery story or AI authorship.
+- Created `DECISIONS.md` as a clearly marked blank candidate outline, not completed
+  answers. The final words and by-hand S04 calculation must come from the candidate,
+  as the brief requires.
+- Created `ai_logs/README.md` stating that the complete unedited exports are still
+  missing. No transcript was fabricated or replaced by a summary.
+- Added `SUBMISSION.md` to distinguish prepared artifacts from remaining actions:
+  candidate decisions, recording/video link, complete AI exports, repository visibility
+  and submission form/deadline checks.
 
-No commits or publication are performed automatically at these checkpoints.
+Checks: documentation links, first-four-line README format and CLI options were
+verified. The source timestamps in the demo were checked against the private pack.
+Known raw-pack paths are absent from the reachable local Git history. The code,
+scientific flags and report were not changed in this documentation phase; the last
+code suite remains 173 passing tests with one Windows symlink test skipped.
+
+The hand-in is **not complete** until the candidate replaces the draft decisions,
+records the video and adds its real link, and supplies the full AI exports. The
+existing remote is `SumitS-3/Sumit-Shripati`; its visibility and form submission
+have not been changed or independently verified.
+
+commit: `docs: prepare submission instructions and evidence walkthrough`
+
