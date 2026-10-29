@@ -1,6 +1,9 @@
-Sumit Shripati
-sumitshripati5391@gmail.com
-Video:  
+Name: Sumit Shripati
+
+Email: sumitshripati5391@gmail.com
+
+Demo Video: https://drive.google.com/file/d/1Lv2h67qtIGJv5qBOX8BAt1XS21pFy2Dg/view?usp=sharing
+
 Run: python checker.py "<path-to-data-pack>"
 
 # Ridgeline weather data checker
